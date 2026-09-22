@@ -1,0 +1,3 @@
+{$WORKBENCH_DOMAIN} {
+    reverse_proxy workbench:8788
+}

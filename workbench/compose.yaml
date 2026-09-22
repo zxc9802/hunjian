@@ -1,0 +1,45 @@
+services:
+  workbench:
+    build: .
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: https://${WORKBENCH_DOMAIN:?Set WORKBENCH_DOMAIN}
+      NAS_URL: ${NAS_URL:-http://100.104.108.83:8780}
+      NAS_TOKEN: ${NAS_TOKEN:?Set NAS_TOKEN}
+      WORKBENCH_PASSWORD: ${WORKBENCH_PASSWORD:?Set WORKBENCH_PASSWORD}
+    volumes:
+      - workbench-data:/data
+    expose:
+      - "8788"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      WORKBENCH_DOMAIN: ${WORKBENCH_DOMAIN:?Set WORKBENCH_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [workbench]
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+volumes:
+  workbench-data:
+  caddy-data:
+  caddy-config:

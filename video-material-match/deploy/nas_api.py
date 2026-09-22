@@ -1,0 +1,202 @@
+"""Single-process NAS job queue; originals are mounted read-only by Compose."""
+import hashlib
+import hmac
+import json
+import os
+import re
+import sqlite3
+import threading
+import time
+import uuid
+from contextlib import contextmanager, asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.responses import FileResponse
+
+from api import clean_error
+from local_ui import validate_request
+
+
+class Jobs:
+    def __init__(self, root):
+        self.root = Path(root).resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.path = self.root / 'jobs.sqlite3'
+        with self.connect() as db:
+            db.execute('''CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY, request_key TEXT UNIQUE, spec TEXT,
+                state TEXT, created REAL, updated REAL, logs TEXT, result TEXT, error TEXT)''')
+            # Never blindly resubmit a possibly billed model request after a crash.
+            db.execute("UPDATE jobs SET state='interrupted', error=?, updated=? WHERE state='running'",
+                       ('服务重启中断任务；保留输出和服务商任务记录，核对后再恢复。', time.time()))
+
+    @contextmanager
+    def connect(self):
+        db = sqlite3.connect(self.path, timeout=30)
+        db.row_factory = sqlite3.Row
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def submit(self, key, spec):
+        encoded = json.dumps(spec, sort_keys=True, ensure_ascii=False)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM jobs WHERE request_key=?', (key,)).fetchone()
+            if row:
+                if row['spec'] != encoded:
+                    raise HTTPException(409, '同一 Idempotency-Key 不能提交不同文案或参数')
+                return row['id']
+            if db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running')").fetchone()[0] >= 20:
+                raise HTTPException(429, '任务队列已满，请稍后再试')
+            job_id = uuid.uuid4().hex
+            now = time.time()
+            db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?)',
+                       (job_id, key, encoded, 'queued', now, now, '[]', None, None))
+            return job_id
+
+    def get(self, job_id):
+        with self.connect() as db:
+            row = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, '任务不存在')
+        result = dict(row)
+        result['logs'] = json.loads(result['logs'])
+        result.pop('request_key')
+        result.pop('spec')
+        return result
+
+    def log(self, job_id, message):
+        message = clean_error(message)
+        with self.connect() as db:
+            logs = json.loads(db.execute('SELECT logs FROM jobs WHERE id=?', (job_id,)).fetchone()[0])
+            db.execute('UPDATE jobs SET logs=?,updated=? WHERE id=?',
+                       (json.dumps((logs + [message])[-100:], ensure_ascii=False), time.time(), job_id))
+        print(f'[{job_id}] {message}', flush=True)
+
+    def run_one(self, runner):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY created LIMIT 1").fetchone()
+            if not row:
+                return False
+            db.execute("UPDATE jobs SET state='running',updated=? WHERE id=?", (time.time(), row['id']))
+        job_id = row['id']
+        folder = self.root / 'outputs' / job_id
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            result = Path(runner(json.loads(row['spec']), folder, lambda msg: self.log(job_id, msg))).resolve()
+            if not result.is_relative_to(folder) or not result.is_file():
+                raise ValueError('任务输出路径无效')
+            report = json.loads((folder/'quality-report.json').read_text(encoding='utf-8'))
+            digest = hashlib.sha256(result.read_bytes()).hexdigest()
+            if not report.get('passed') or report.get('sha256') != digest:
+                raise ValueError('实际成片尚未通过检查或检查报告与成片不一致')
+            with self.connect() as db:
+                db.execute("UPDATE jobs SET state='done',result=?,updated=? WHERE id=?",
+                           (result.name, time.time(), job_id))
+        except Exception as exc:
+            error = clean_error(exc)
+            self.log(job_id, '失败：' + error)
+            with self.connect() as db:
+                db.execute("UPDATE jobs SET state='failed',error=?,updated=? WHERE id=?", (error, time.time(), job_id))
+        return True
+
+
+def generate(spec, folder, log):
+    from matcher import create_plan
+    from voice import synthesize_plan
+    from finish import deliver
+    catalog = os.environ.get('CATALOG_DIR', '/data/catalog')
+    saved = folder / 'plan.json'
+    plan = json.loads(saved.read_text(encoding='utf-8')) if saved.exists() else create_plan(
+        spec['text'], catalog, folder, log=log)
+    if plan['script'] != spec['text']:
+        raise ValueError('保存的计划与任务文案不一致，不能复用已付费任务')
+    synthesize_plan(plan, folder, spec['emotion_alpha'], log=log)
+    return deliver(plan, folder, spec['width'], spec['height'], catalog=catalog, log=log)
+
+
+def create_app(root=None, token=None, runner=generate, start_worker=True):
+    token = token or os.environ.get('MIXER_API_TOKEN', '')
+    if len(token) < 32 or not token.isascii():
+        raise ValueError('MIXER_API_TOKEN 必须是至少 32 字符的随机 ASCII 密钥')
+    jobs = Jobs(root or os.environ.get('DATA_DIR', '/data'))
+    stop = threading.Event()
+
+    def work():
+        while not stop.is_set():
+            if not jobs.run_one(runner):
+                stop.wait(1)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if start_worker:
+            threading.Thread(target=work, name='mixer-worker', daemon=True).start()
+        yield
+        stop.set()
+
+    app = FastAPI(title='海南康养混剪 NAS API', docs_url=None, redoc_url=None,
+                  openapi_url=None, lifespan=lifespan)
+    app.state.jobs = jobs
+
+    def authorize(request: Request):
+        value = request.headers.get('authorization', '')
+        if not hmac.compare_digest(value.encode(), ('Bearer ' + token).encode()):
+            raise HTTPException(401, '需要有效访问密钥', headers={'WWW-Authenticate': 'Bearer'})
+        if request.headers.get('origin'):
+            raise HTTPException(403, '仅接受服务端或命令行 API 调用')
+
+    @app.get('/health')
+    def health():
+        return {'status': 'ok', 'service': 'hainan-mixer', 'worker_concurrency': 1}
+
+    @app.post('/v1/jobs', status_code=202, dependencies=[Depends(authorize)])
+    async def submit(request: Request):
+        key = request.headers.get('idempotency-key', '')
+        if not re.fullmatch(r'[A-Za-z0-9._-]{8,128}', key):
+            raise HTTPException(400, '需要 8–128 字符的 Idempotency-Key')
+        if request.headers.get('content-type', '').split(';')[0] != 'application/json':
+            raise HTTPException(415, '需要 application/json')
+        data = bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data) > 50000:
+                raise HTTPException(413, '请求过大')
+        try:
+            body = json.loads(data)
+            text, alpha, action = validate_request(body)
+            if action != 'video':
+                raise ValueError('NAS 接口生成有声成片，action 必须为 video')
+            width, height = body.get('width', 1080), body.get('height', 1920)
+            if type(width) is not int or type(height) is not int or (width, height) not in (
+                    (1080, 1920), (1920, 1080), (720, 1280), (1280, 720)):
+                raise ValueError('仅支持 720p/1080p 横屏或竖屏')
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(400, clean_error(exc)) from None
+        job_id = jobs.submit(key, {'text': text, 'emotion_alpha': alpha, 'width': width, 'height': height})
+        return {'id': job_id, 'state': jobs.get(job_id)['state'], 'status_url': f'/v1/jobs/{job_id}'}
+
+    @app.get('/v1/jobs/{job_id}', dependencies=[Depends(authorize)])
+    def status(job_id: str):
+        result = jobs.get(job_id)
+        if result['state'] == 'done':
+            result['video_url'] = f'/v1/jobs/{job_id}/video'
+            result['report_url'] = f'/v1/jobs/{job_id}/report'
+        return result
+
+    @app.get('/v1/jobs/{job_id}/{artifact}', dependencies=[Depends(authorize)])
+    def download(job_id: str, artifact: str):
+        job = jobs.get(job_id)
+        if job['state'] != 'done':
+            raise HTTPException(409, '成片尚未通过检查')
+        name = {'video': job['result'], 'report': 'quality-report.json', 'captions': 'captions.srt',
+                'plan': 'plan.json', 'cuts': 'cuts.json'}.get(artifact)
+        if not name:
+            raise HTTPException(404, '文件不存在')
+        return FileResponse(jobs.root/'outputs'/job_id/name, filename=name)
+
+    return app

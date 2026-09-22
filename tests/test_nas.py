@@ -1,0 +1,132 @@
+import hashlib
+import json
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT/'video-material-match'/'scripts'), str(ROOT/'video-material-match'/'deploy')]
+from fastapi.testclient import TestClient
+from nas_api import create_app, Jobs, generate
+from migrate_catalog import migrate, source_relative, vector_digest
+from matcher import Catalog, file_stamp
+from api import Models
+
+
+class NasTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.app = create_app(self.root, 'x'*40, start_worker=False)
+        self.client = TestClient(self.app)
+        self.headers = {'Authorization': 'Bearer '+'x'*40, 'Idempotency-Key': 'nas-test-001'}
+
+    def submit(self, **body):
+        return self.client.post('/v1/jobs', headers=self.headers, json={'text': '这里可以游泳。', **body})
+
+    def test_auth_validation_and_idempotency(self):
+        self.assertEqual(self.client.post('/v1/jobs', json={'text': '测试'}).status_code, 401)
+        self.assertEqual(self.submit(emotion_alpha=.9).status_code, 400)
+        self.assertEqual(self.submit(emotion_alpha=.81).status_code, 400)
+        self.assertEqual(self.submit(width=9999).status_code, 400)
+        self.assertEqual(self.submit(width=1080.0).status_code, 400)
+        a, b = self.submit(), self.submit()
+        self.assertEqual(a.status_code, 202)
+        self.assertEqual(a.json()['id'], b.json()['id'])
+        self.assertEqual(self.submit(text='不同文案').status_code, 409)
+        job_id = a.json()['id']
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}').status_code, 401)
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers).status_code, 409)
+        self.assertEqual(self.client.post('/v1/jobs', headers={**self.headers,'Origin':'https://other.test'},
+                                         json={'text':'测试'}).status_code, 403)
+
+    def test_persistent_queue_and_interrupted_job_not_resubmitted(self):
+        job_id = self.submit().json()['id']
+        restarted = Jobs(self.root)
+        self.assertEqual(restarted.get(job_id)['state'], 'queued')
+        with restarted.connect() as db:
+            db.execute("UPDATE jobs SET state='running' WHERE id=?", (job_id,))
+        recovered = Jobs(self.root)
+        self.assertEqual(recovered.get(job_id)['state'], 'interrupted')
+        self.assertFalse(recovered.run_one(lambda *_: self.fail('重复下单')))
+
+    def test_only_reviewed_actual_artifact_delivered(self):
+        job_id = self.submit().json()['id']
+
+        def render(spec, folder, log):
+            result = folder/'video-music.mp4'
+            result.write_bytes(b'actual-rendered-by-test')
+            (folder/'cuts.json').write_text('[{"scene":1}]')
+            (folder/'quality-report.json').write_text(json.dumps({
+                'passed': True, 'sha256': hashlib.sha256(result.read_bytes()).hexdigest()}))
+            return result
+
+        jobs = self.app.state.jobs
+        self.assertTrue(jobs.run_one(render))
+        self.assertEqual(jobs.get(job_id)['state'], 'done')
+        response = self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers)
+        self.assertEqual(response.content, b'actual-rendered-by-test')
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/cuts', headers=self.headers).json(), [{'scene':1}])
+        self.assertFalse(jobs.run_one(render))
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/jobs.sqlite3', headers=self.headers).status_code, 404)
+
+    def test_mismatched_quality_report_fails(self):
+        job_id = self.submit().json()['id']
+
+        def render(spec, folder, log):
+            result = folder/'video.mp4'
+            result.write_bytes(b'changed')
+            (folder/'quality-report.json').write_text('{"passed":true,"sha256":"old"}')
+            return result
+
+        self.app.state.jobs.run_one(render)
+        self.assertEqual(self.app.state.jobs.get(job_id)['state'], 'failed')
+
+    def test_operator_resume_reuses_saved_plan_and_paid_voice_cache(self):
+        plan={'script':'原文案', 'scenes':[{'text':'原分段'}]}
+        (self.root/'plan.json').write_text(json.dumps(plan),encoding='utf-8')
+        spec={'text':'原文案','emotion_alpha':.8,'width':1080,'height':1920}
+        with patch('matcher.create_plan') as create, patch('voice.synthesize_plan') as synth, \
+             patch('finish.deliver',return_value=self.root/'video.mp4') as deliver:
+            generate(spec,self.root,lambda m:None)
+            create.assert_not_called()
+            self.assertEqual(synth.call_args.args[0],plan)
+            self.assertEqual(synth.call_args.args[1],self.root)
+            self.assertEqual(deliver.call_args.args[0],plan)
+            with self.assertRaisesRegex(ValueError,'文案不一致'):
+                generate({**spec,'text':'其他文案'},self.root,lambda m:None)
+            self.assertEqual(synth.call_count,1)
+
+    def test_migration_preserves_vectors_and_rejects_changed_original(self):
+        seed, media, target = self.root/'seed', self.root/'media', self.root/'catalog'
+        media.mkdir()
+        source = media/'泳池.mp4'
+        source.write_bytes(b'original source bytes')
+        (seed/'proxies').mkdir(parents=True)
+        (seed/'proxies'/'one.mp4').write_bytes(b'proxy')
+        models = Models()
+        catalog = Catalog(seed, {'embedding': models.embed_url, 'llm': models.llm_url,
+                                'chunk_seconds':8, 'proxy_fps':1, 'schema':1})
+        catalog.add({'path':r'Z:\泳池.mp4', 'stamp':file_stamp(source), 'start':0, 'end':8,
+                     'proxy':r'D:\old\proxies\one.mp4', 'description':'游泳池'}, [1,0,0])
+        before = vector_digest(catalog.db)
+        catalog.close()
+        result = migrate(seed, target, media, 'Z:\\')
+        self.assertEqual(result['vector_sha256'], before)
+        self.assertEqual(result['vectors'], 1)
+        self.assertEqual(result['embeddings_recomputed'], 0)
+        self.assertEqual(migrate(seed, target, media, 'Z:\\'), result)
+        source.write_bytes(b'changed source')
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            migrate(seed, target, media, 'Z:\\')
+        with self.assertRaises(ValueError):
+            source_relative(r'Z:\..\secret.mp4', 'Z:\\')
+        with self.assertRaises(ValueError):
+            source_relative(r'C:\secret.mp4', 'Z:\\')
+
+
+if __name__ == '__main__':
+    unittest.main()

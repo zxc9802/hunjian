@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-22T09:07:39.523Z",
+  "title": "Design System: 海南康养视频工作台",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "暖白",
+        "tonalRamp": [
+          "oklch(15.00% 0.00802 98.88)",
+          "oklch(26.43% 0.00802 98.88)",
+          "oklch(37.86% 0.00802 98.88)",
+          "oklch(49.29% 0.00802 98.88)",
+          "oklch(60.71% 0.00802 98.88)",
+          "oklch(72.14% 0.00802 98.88)",
+          "oklch(83.57% 0.00802 98.88)",
+          "oklch(95.00% 0.00802 98.88)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "纸白",
+        "tonalRamp": [
+          "oklch(15.00% 0.00537 95.10)",
+          "oklch(26.43% 0.00537 95.10)",
+          "oklch(37.86% 0.00537 95.10)",
+          "oklch(49.29% 0.00537 95.10)",
+          "oklch(60.71% 0.00537 95.10)",
+          "oklch(72.14% 0.00537 95.10)",
+          "oklch(83.57% 0.00537 95.10)",
+          "oklch(95.00% 0.00537 95.10)"
+        ]
+      },
+      "side": {
+        "role": "neutral",
+        "displayName": "浅灰绿导航",
+        "tonalRamp": [
+          "oklch(15.00% 0.01213 116.81)",
+          "oklch(26.43% 0.01213 116.81)",
+          "oklch(37.86% 0.01213 116.81)",
+          "oklch(49.29% 0.01213 116.81)",
+          "oklch(60.71% 0.01213 116.81)",
+          "oklch(72.14% 0.01213 116.81)",
+          "oklch(83.57% 0.01213 116.81)",
+          "oklch(95.00% 0.01213 116.81)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "墨绿文字",
+        "tonalRamp": [
+          "oklch(15.00% 0.03082 172.17)",
+          "oklch(26.43% 0.03082 172.17)",
+          "oklch(37.86% 0.03082 172.17)",
+          "oklch(49.29% 0.03082 172.17)",
+          "oklch(60.71% 0.03082 172.17)",
+          "oklch(72.14% 0.03082 172.17)",
+          "oklch(83.57% 0.03082 172.17)",
+          "oklch(95.00% 0.03082 172.17)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "灰绿辅助文字",
+        "tonalRamp": [
+          "oklch(15.00% 0.02520 157.89)",
+          "oklch(26.43% 0.02520 157.89)",
+          "oklch(37.86% 0.02520 157.89)",
+          "oklch(49.29% 0.02520 157.89)",
+          "oklch(60.71% 0.02520 157.89)",
+          "oklch(72.14% 0.02520 157.89)",
+          "oklch(83.57% 0.02520 157.89)",
+          "oklch(95.00% 0.02520 157.89)"
+        ]
+      },
+      "green": {
+        "role": "primary",
+        "displayName": "森林绿",
+        "tonalRamp": [
+          "oklch(15.00% 0.07212 164.31)",
+          "oklch(26.43% 0.07212 164.31)",
+          "oklch(37.86% 0.07212 164.31)",
+          "oklch(49.29% 0.07212 164.31)",
+          "oklch(60.71% 0.07212 164.31)",
+          "oklch(72.14% 0.07212 164.31)",
+          "oklch(83.57% 0.07212 164.31)",
+          "oklch(95.00% 0.07212 164.31)"
+        ]
+      },
+      "green-hover": {
+        "role": "primary",
+        "displayName": "深森林绿",
+        "tonalRamp": [
+          "oklch(15.00% 0.06647 159.76)",
+          "oklch(26.43% 0.06647 159.76)",
+          "oklch(37.86% 0.06647 159.76)",
+          "oklch(49.29% 0.06647 159.76)",
+          "oklch(60.71% 0.06647 159.76)",
+          "oklch(72.14% 0.06647 159.76)",
+          "oklch(83.57% 0.06647 159.76)",
+          "oklch(95.00% 0.06647 159.76)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "浅灰绿线",
+        "tonalRamp": [
+          "oklch(15.00% 0.01614 130.43)",
+          "oklch(26.43% 0.01614 130.43)",
+          "oklch(37.86% 0.01614 130.43)",
+          "oklch(49.29% 0.01614 130.43)",
+          "oklch(60.71% 0.01614 130.43)",
+          "oklch(72.14% 0.01614 130.43)",
+          "oklch(83.57% 0.01614 130.43)",
+          "oklch(95.00% 0.01614 130.43)"
+        ]
+      },
+      "soft": {
+        "role": "primary",
+        "displayName": "浅叶绿",
+        "tonalRamp": [
+          "oklch(15.00% 0.01578 139.44)",
+          "oklch(26.43% 0.01578 139.44)",
+          "oklch(37.86% 0.01578 139.44)",
+          "oklch(49.29% 0.01578 139.44)",
+          "oklch(60.71% 0.01578 139.44)",
+          "oklch(72.14% 0.01578 139.44)",
+          "oklch(83.57% 0.01578 139.44)",
+          "oklch(95.00% 0.01578 139.44)"
+        ]
+      },
+      "red": {
+        "role": "secondary",
+        "displayName": "砖红状态",
+        "tonalRamp": [
+          "oklch(15.00% 0.15117 30.37)",
+          "oklch(26.43% 0.15117 30.37)",
+          "oklch(37.86% 0.15117 30.37)",
+          "oklch(49.29% 0.15117 30.37)",
+          "oklch(60.71% 0.15117 30.37)",
+          "oklch(72.14% 0.15117 30.37)",
+          "oklch(83.57% 0.15117 30.37)",
+          "oklch(95.00% 0.15117 30.37)"
+        ]
+      },
+      "amber": {
+        "role": "secondary",
+        "displayName": "赭黄状态",
+        "tonalRamp": [
+          "oklch(15.00% 0.09841 73.64)",
+          "oklch(26.43% 0.09841 73.64)",
+          "oklch(37.86% 0.09841 73.64)",
+          "oklch(49.29% 0.09841 73.64)",
+          "oklch(60.71% 0.09841 73.64)",
+          "oklch(72.14% 0.09841 73.64)",
+          "oklch(83.57% 0.09841 73.64)",
+          "oklch(95.00% 0.09841 73.64)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "页面标题",
+        "purpose": "主要操作页面标题；窄屏使用局部缩小值。"
+      },
+      "title": {
+        "displayName": "分节标题",
+        "purpose": "设置区等一般分节标题。"
+      },
+      "body": {
+        "displayName": "中文正文",
+        "purpose": "全局正文和表单的基础字体。"
+      },
+      "editor": {
+        "displayName": "视频文案",
+        "purpose": "较宽行距的长文案输入。"
+      },
+      "small": {
+        "displayName": "辅助说明",
+        "purpose": "次要说明与状态补充。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "toast",
+        "value": "0 8px 24px #20362f26",
+        "purpose": "临时覆盖通知的唯一现有投影，不作为多级阴影尺度。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "button-feedback",
+        "value": "background .18s ease-out,color .18s ease-out",
+        "purpose": "常规按钮背景与文字状态反馈。"
+      },
+      {
+        "name": "preview-ratio",
+        "value": "aspect-ratio .2s ease-out",
+        "purpose": "预览框画幅切换。"
+      },
+      {
+        "name": "reduced-motion",
+        "value": "transition:none!important;animation:none!important;scroll-behavior:auto!important",
+        "purpose": "prefers-reduced-motion:reduce 下的全局覆盖。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "wide-min",
+        "value": "1500px"
+      },
+      {
+        "name": "compact-max",
+        "value": "1180px"
+      },
+      {
+        "name": "navigation-collapse-max",
+        "value": "990px"
+      },
+      {
+        "name": "single-column-max",
+        "value": "760px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "主操作按钮",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "用于进入工作台、创建视频和下载成片。",
+      "html": "<button class=\"ds-button-primary\" type=\"button\">开始制作 <svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.65\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14m-6-6 6 6-6 6\"/></svg></button>",
+      "css": ".ds-button-primary{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;font-size:14px;font-weight:600;min-height:44px;padding:11px 18px;display:inline-flex;justify-content:center;align-items:center;gap:9px;border:1px solid transparent;border-radius:8px;cursor:pointer;transition:background .18s ease-out,color .18s ease-out;background:var(--green,#245e47);color:var(--paper,#fffefa)}.ds-button-primary:hover:not(:disabled){background:var(--green-hover,#174831)}.ds-button-primary:active:not(:disabled){background:#103a29}.ds-button-primary:disabled{opacity:.5;cursor:not-allowed}.ds-button-primary:focus-visible{outline:2px solid var(--green,#245e47);outline-offset:4px}@media(prefers-reduced-motion:reduce){button{transition:none!important}}"
+    },
+    {
+      "name": "次要操作按钮",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "用于试听、沿用文案和记录展开等辅助操作。",
+      "html": "<button class=\"ds-button-quiet\" type=\"button\">沿用文案新建</button>",
+      "css": ".ds-button-quiet{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;font-size:14px;font-weight:600;min-height:44px;padding:11px 18px;display:inline-flex;justify-content:center;align-items:center;gap:9px;border:1px solid transparent;border-radius:8px;cursor:pointer;transition:background .18s ease-out,color .18s ease-out;background:transparent;color:var(--ink,#20362f);border-color:var(--line,#d9dfd4)}.ds-button-quiet:hover:not(:disabled){background:var(--soft,#e6eee4)}.ds-button-quiet:disabled{opacity:.5;cursor:not-allowed}.ds-button-quiet:focus-visible{outline:2px solid var(--green,#245e47);outline-offset:4px}@media(prefers-reduced-motion:reduce){button{transition:none!important}}"
+    },
+    {
+      "name": "文字操作",
+      "kind": "button",
+      "refersTo": "button-text",
+      "description": "不与主按钮争夺层级的局部操作。",
+      "html": "<button class=\"ds-button-text\" type=\"button\">填入示例文案</button>",
+      "css": ".ds-button-text{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;font-size:12px;color:var(--green,#245e47);background:none;border:0;padding:6px 0;min-height:32px;text-decoration:underline;text-underline-offset:4px;cursor:pointer}.ds-button-text:hover{color:var(--green-hover,#174831)}.ds-button-text:focus-visible{outline:2px solid var(--green,#245e47);outline-offset:4px}"
+    },
+    {
+      "name": "原生输入字段",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "纸白底、细边框和明确焦点的登录输入字段。",
+      "html": "<label class=\"ds-field-label\">工作台密码<input class=\"ds-field\" type=\"password\" autocomplete=\"current-password\" placeholder=\"输入密码\"></label>",
+      "css": ".ds-field-label{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;display:block;font-size:13px;font-weight:600;color:var(--ink,#20362f)}.ds-field{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;display:block;margin-top:12px;font-size:14px;font-weight:400;color:var(--ink,#20362f);border:1px solid #bfcbbf;border-radius:7px;background:var(--paper,#fffefa);min-height:42px;padding:10px 12px;caret-color:var(--green,#245e47)}.ds-field:focus-visible{outline:2px solid var(--green,#245e47);outline-offset:4px}"
+    },
+    {
+      "name": "任务记录导航",
+      "kind": "nav",
+      "refersTo": "history-item",
+      "description": "当前任务用纸白色面和边框标记，时间和状态保持紧凑。",
+      "html": "<nav class=\"ds-history\" aria-label=\"制作记录\"><button class=\"ds-history-item\" type=\"button\" aria-current=\"true\"><span class=\"ds-history-title\">已保存的视频文案</span><span class=\"ds-history-meta\"><span>09/22 16:46</span><span class=\"ds-history-done\">已完成</span></span></button><button class=\"ds-history-item\" type=\"button\" aria-current=\"false\"><span class=\"ds-history-title\">下一支视频文案</span><span class=\"ds-history-meta\"><span>09/22 16:42</span><span>正在制作</span></span></button></nav>",
+      "css": ".ds-history{max-width:240px;background:var(--side,#eceee5);padding:12px}.ds-history-item{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;display:block;width:100%;padding:13px 11px;margin:0 0 5px;border:1px solid transparent;border-radius:8px;text-align:left;background:transparent;color:var(--ink,#20362f);cursor:pointer}.ds-history-item:hover{background:#e4e9de}.ds-history-item[aria-current=true]{background:var(--paper,#fffefa);border-color:var(--line,#d9dfd4)}.ds-history-title{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:500}.ds-history-meta{display:flex;justify-content:space-between;gap:8px;color:var(--muted,#536359);font-size:11px;margin-top:8px;font-variant-numeric:tabular-nums}.ds-history-done{color:var(--green,#245e47)}.ds-history-item:focus-visible{outline:2px solid var(--green,#245e47);outline-offset:4px}"
+    },
+    {
+      "name": "任务状态标签",
+      "kind": "chip",
+      "refersTo": "state-tag",
+      "description": "用文字配合功能色表达普通、异常和待核对状态。",
+      "html": "<div class=\"ds-state-examples\"><span class=\"ds-state\" role=\"status\">已完成</span><span class=\"ds-state\" data-state=\"interrupted\" role=\"status\">制作中断</span><span class=\"ds-state\" data-state=\"uncertain\" role=\"status\">等待核对</span></div>",
+      "css": ".ds-state-examples{display:flex;flex-wrap:wrap;gap:12px}.ds-state{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;font-size:12px;color:var(--green,#245e47);background:var(--soft,#e6eee4);border-radius:5px;padding:5px 8px}.ds-state[data-state=interrupted]{color:var(--red,#a33224);background:#f6e5dd}.ds-state[data-state=uncertain]{color:var(--amber,#835811);background:#f4ebd7}"
+    },
+    {
+      "name": "文案工作面",
+      "kind": "card",
+      "refersTo": "editor-sheet",
+      "description": "标题、可编辑正文与字数信息共用一个纸白面板。",
+      "html": "<section class=\"ds-editor-sheet\"><label class=\"ds-editor-label\" for=\"ds-script\">视频文案</label><textarea class=\"ds-editor-text\" id=\"ds-script\" placeholder=\"输入或粘贴完整文案。\" aria-describedby=\"ds-script-help\"></textarea><div class=\"ds-editor-footer\"><span id=\"ds-script-help\">按文案匹配真实素材，保留原意。</span><span>0 / 6000</span></div></section>",
+      "css": ".ds-editor-sheet{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;border:1px solid #cbd5c9;background:var(--paper,#fffefa);border-radius:12px;overflow:hidden;color:var(--ink,#20362f)}.ds-editor-label{display:block;padding:18px 20px 8px;font-size:14px;font-weight:600}.ds-editor-text{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;box-sizing:border-box;display:block;resize:vertical;min-height:260px;width:100%;border:0;background:transparent;color:var(--ink,#20362f);font-size:15px;line-height:1.95;padding:12px 20px 20px;caret-color:var(--green,#245e47)}.ds-editor-text::placeholder{color:#69776b;opacity:1}.ds-editor-text:focus-visible{outline:2px solid var(--green,#245e47);outline-offset:-4px}.ds-editor-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 20px;border-top:1px solid #e6e9e1;font-size:11px;color:var(--muted,#536359);font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "画幅选择",
+      "kind": "custom",
+      "refersTo": "format-choice",
+      "description": "原生单选框与可见比例图形共同表达画幅设置。",
+      "html": "<div class=\"ds-segmented\" role=\"group\" aria-label=\"视频画幅\"><label class=\"ds-format-label\"><input class=\"ds-format-input\" type=\"radio\" name=\"ds-format\" checked><span class=\"ds-format-option\"><i class=\"ds-frame\" aria-hidden=\"true\"></i>竖屏 9:16</span></label><label class=\"ds-format-label\"><input class=\"ds-format-input\" type=\"radio\" name=\"ds-format\"><span class=\"ds-format-option\"><i class=\"ds-frame ds-frame-landscape\" aria-hidden=\"true\"></i>横屏 16:9</span></label></div>",
+      "css": ".ds-segmented{display:flex;gap:8px}.ds-format-label{font-family:\"Microsoft YaHei\",\"PingFang SC\",system-ui,sans-serif;flex:1;position:relative;font-weight:400;min-width:0;color:var(--ink,#20362f)}.ds-format-input{position:absolute;opacity:0;width:1px;height:1px}.ds-format-option{display:flex;align-items:center;justify-content:center;gap:8px;min-height:42px;border:1px solid #c7d0c3;border-radius:7px;padding:8px 10px;font-size:12px;white-space:nowrap;cursor:pointer}.ds-format-input:checked+.ds-format-option{background:#e3ecdf;border-color:var(--green,#245e47);color:var(--green,#245e47)}.ds-format-input:focus-visible+.ds-format-option{outline:2px solid var(--green,#245e47);outline-offset:3px}.ds-format-input:disabled+.ds-format-option{cursor:default;opacity:.75}.ds-frame{display:inline-block;border:1.5px solid currentColor;border-radius:2px;width:11px;height:17px}.ds-frame-landscape{width:18px;height:11px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "海南康养视频工作台",
+    "overview": "这是既有视频制作界面的延续：暖白工作面、森林绿操作提示、清晰的中文内容。它承接已有控制页的视觉语言，以可持续使用的工作台为定位，不另设品牌比喻或营销视觉。\n\n内容输入、任务状态与真实成片共用一套克制的视觉层级。桌面允许设置与预览并排，窄屏保持编辑在前、预览在后的阅读顺序；密度来自任务信息和表单，而非装饰。",
+    "keyCharacteristics": [
+      "暖白底与浅灰绿分区，森林绿集中标记可执行操作和任务状态。",
+      "中文系统字体、短标题与宽松文案行距，优先保证输入和阅读。",
+      "细边框、柔和圆角、内联线性 SVG 图标，工作面保持平坦。",
+      "状态同时使用文字和颜色；日志渐进展开，成片使用原生播放器。"
+    ],
+    "rules": [
+      {
+        "name": "The Action Green Rule",
+        "body": "森林绿承担操作、选中和明确状态反馈，大片背景沿用中性纸面。",
+        "section": "colors"
+      },
+      {
+        "name": "The Status With Words Rule",
+        "body": "状态必须有可读文字，绿色、砖红和赭黄不能单独传达任务结论。",
+        "section": "colors"
+      },
+      {
+        "name": "The Reading First Rule",
+        "body": "延续中文系统字体与文案行距；不把紧凑元数据字号扩展到主输入内容。",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Workspace Rule",
+        "body": "表单、任务记录和预览依靠色面与边线分层，投影仅服务临时覆盖通知。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do 延续暖白纸面、森林绿操作提示与中文系统字体。",
+      "Do 用可读文字补充每一种连接、提交和制作状态。",
+      "Do 为键盘操作保留可见焦点，并尊重减弱动画偏好。",
+      "Do 在手机制作记录中保留新建或返回草稿入口。",
+      "Do 让预览、日志与当前选择的真实任务对应。"
+    ],
+    "donts": [
+      "Don't 将绿色铺成与操作无关的大面积装饰。",
+      "Don't 把元数据的小字号用于文案输入或主要说明。",
+      "Don't 给普通工作面增加现有系统中不存在的多级投影。",
+      "Don't 用虚构进度、占位影片或成功颜色代替真实任务结论。"
+    ]
+  }
+}

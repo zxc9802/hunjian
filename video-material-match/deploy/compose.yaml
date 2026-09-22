@@ -1,0 +1,47 @@
+services:
+  mixer:
+    pull_policy: build
+    build:
+      context: ./app
+      dockerfile: deploy/Dockerfile
+    container_name: hainan-mixer
+    restart: unless-stopped
+    user: "1026:10"
+    ports:
+      - "192.168.20.225:8780:8780"
+    env_file:
+      - ./private/runtime.env
+    environment:
+      SOURCE_ROOT: '\\192.168.20.225\海南康养素材库'
+      DATA_DIR: /data
+      CATALOG_DIR: /data/catalog
+      RERANK_URL: https://api.302ai.cn/v1/reranks
+      TTS_BASE_URL: https://api.302ai.cn
+      TTS_UPLOAD_FALLBACK_URL: https://dash-api.302ai.cn/gpt/api/upload/gpt/image
+    volumes:
+      - type: bind
+        source: /volume1/海南康养素材库
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./seed:/seed:ro
+      - ./data:/data
+    cpus: "4"
+    mem_limit: 4g
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8780/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

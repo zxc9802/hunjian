@@ -1,0 +1,41 @@
+.venv/
+data/
+outputs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.workbuddy/
+.impeccable/review/
+
+# Credentials and private runtime state
+.env*
+!.env.example
+*.env
+private/
+tailscale/state/
+*.key
+*.pem
+*.p12
+*.pfx
+*.sqlite3*
+*.log
+
+# Source media, personal voice references, indexes and generated packages
+*.mp3
+*.wav
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.m4v
+*.faiss
+*.npy
+*.skill
+*.zip
+
+# Local deployment records; public setup instructions live in README files
+/全量索引运行记录.md
+/验证记录.md
+/智能体工作台验收.md
+/NAS部署验收.md

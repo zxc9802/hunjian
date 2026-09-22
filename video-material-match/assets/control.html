@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>海南康养 · 素材匹配</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f4ee;color:#20362f;font-family:"Microsoft YaHei",sans-serif}main{max-width:980px;margin:64px auto;padding:0 28px}.eyebrow{letter-spacing:3px;font-size:12px;color:#58766b}h1{font-size:38px;letter-spacing:-1px;margin:15px 0}p{line-height:1.8;color:#64716a}.workspace{margin-top:36px;background:#fff;padding:30px;border:1px solid #dce1d9;border-radius:14px}label{display:block;margin-bottom:12px;font-size:15px;font-weight:600}textarea{width:100%;min-height:155px;resize:vertical;padding:18px;font:inherit;line-height:1.8;border:1px solid #bdcec3;border-radius:8px;background:#fafbf8;color:#20362f}textarea:focus{outline:2px solid #477f69;outline-offset:2px}.controls{display:flex;gap:40px;margin:26px 0;align-items:center}.slider{flex:1}input[type=range]{width:100%;accent-color:#24664e}.range-labels{display:flex;justify-content:space-between;color:#7c857e;font-size:12px}.value{font-size:30px;font-variant-numeric:tabular-nums}small{display:block;color:#788279;line-height:1.8}button{background:#245e47;border:0;border-radius:7px;color:white;padding:13px 20px;font:inherit;cursor:pointer}button.secondary{background:#eaf0e9;color:#28543d;margin-left:10px}button:disabled{opacity:.45;cursor:wait}.status{margin-top:28px;border-top:1px solid #e1e5dc;padding-top:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;font-size:13px;color:#65746b;max-height:240px;overflow:auto}video{width:100%;margin-top:18px;border-radius:8px;background:#192720}a{color:#24664e}#error{color:#a53d2e}.note{font-size:12px;margin-top:26px}@media(max-width:650px){main{margin:30px auto;padding:0 18px}h1{font-size:28px}.workspace{padding:20px}.controls{gap:20px}button{width:100%}button.secondary{margin:10px 0 0}}
+</style>
+<main>
+<div class="eyebrow">海南康养 / 视频工作台</div>
+<h1>把文案，变成真实画面。</h1>
+<p>从素材库寻找对应场景，搭配配音、字幕与背景音乐，检查成片后交付。</p>
+<a href="http://127.0.0.1:8766/" target="_blank" rel="noopener">查看素材库向量化进度 ↗</a>
+<section class="workspace">
+<label for="text">视频文案</label>
+<textarea id="text" maxlength="6000" placeholder="例如：这里有游泳池，房间里有独立卫生间。"></textarea>
+<div class="controls"><div class="slider"><label for="emotion">配音情绪强度</label><input id="emotion" type="range" min="0.1" max="0.85" step="0.05" value="0.8"><div class="range-labels"><span>0.10 · 克制</span><span>0.85 · 强烈</span></div></div><output class="value" id="value" for="emotion">0.80</output></div>
+<small>IndexTTS2 · 主音色：9月21日.mp3 · 使用独立情绪参考音频 · 默认强度 0.80</small>
+<p><button id="generate">生成配音成片</button><button class="secondary" id="match">只匹配素材并预览</button></p>
+<p id="error" role="alert"></p>
+<div class="status"><strong id="state" role="status">等待文案</strong><pre id="log"></pre><a id="download" hidden>打开成片</a><video id="video" controls hidden></video></div>
+</section>
+<p class="note">只使用已建立索引的素材。素材不足时保留缺口；无配音预览使用估算时长，有声成片按每段配音的实际时长排列。</p>
+</main>
+<script>
+const $=id=>document.getElementById(id);let timer;
+$('emotion').oninput=()=>{$('value').value=Number($('emotion').value).toFixed(2)};
+async function poll(){try{const s=await(await fetch('/api/status')).json();$('state').textContent=({idle:'等待文案',running:'正在制作…',done:'已完成',failed:'生成中断，请查看原因'})[s.state];$('log').textContent=(s.logs||[]).join('\n');const busy=s.state==='running';$('generate').disabled=$('match').disabled=busy;if(s.url){$('video').hidden=$('download').hidden=false;if($('video').getAttribute('src')!==s.url)$('video').src=s.url;$('download').href=s.url;$('state').textContent=`已完成${s.missing?' · '+s.missing+' 处缺少素材':''}`}if(busy)timer=setTimeout(poll,2500)}catch(e){$('error').textContent='本地服务连接中断';$('generate').disabled=$('match').disabled=false}}
+async function submit(action){clearTimeout(timer);$('error').textContent='';$('video').hidden=$('download').hidden=true;$('generate').disabled=$('match').disabled=true;try{const r=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:$('text').value,emotion_alpha:Number($('emotion').value),action})});const result=await r.json();if(!r.ok)throw Error(result.error);poll()}catch(e){$('error').textContent=e.message;$('generate').disabled=$('match').disabled=false}}
+$('generate').onclick=()=>submit('video');$('match').onclick=()=>submit('match');poll();
+</script>
+</html>

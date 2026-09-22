@@ -1,0 +1,4 @@
+interface:
+  display_name: "视频混剪素材匹配"
+  short_description: "从文案自动检索本地真实视频，核验画面并生成情绪配音与字幕混剪"
+  default_prompt: "使用 $video-material-match 为我的文案匹配 Z 盘视频素材，并用 IndexTTS2 生成配音、字幕和混剪成片。"
