@@ -16,6 +16,8 @@
 
 ## 新加坡部署
 
+使用 Zeabur 托管时请改看 [Zeabur 部署说明](ZEABUR.md)；下面的 Docker Compose/Caddy 步骤用于自己管理的服务器。
+
 准备一个指向新加坡服务器的域名，确认服务器 Tailscale 在线且能访问 `http://100.104.108.83:8780/health`。下面操作只部署网页与转发后台，不复制或重新向量化素材。
 
 1. 把整个 `workbench/` 目录上传到服务器，例如 `/opt/hainan-workbench`。

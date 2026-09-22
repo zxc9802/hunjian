@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!workbench/
+!workbench/**
+workbench/**/__pycache__/
+workbench/**/*.pyc
+workbench/**/*.log
+workbench/.env
+workbench/.env.*
+workbench/data/
+workbench/**/*.sqlite3*

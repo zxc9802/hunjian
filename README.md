@@ -55,6 +55,8 @@ New-Item -ItemType Directory -Force data/nas-deploy
 
 ## 部署到新加坡服务器
 
+如果使用 Zeabur 从 GitHub 部署，按 [Zeabur 部署说明](workbench/ZEABUR.md)操作。仓库根目录已提供 Dockerfile，用来启动完整 Python 工作台，不能选择纯静态网站部署。
+
 按 [工作台部署说明](workbench/README.md)设置域名、HTTPS、NAS 私网地址和服务端凭据，使用 Docker Compose 启动。`workbench/.env.example` 只含占位配置。实际 `.env` 不提交到 Git。
 
 本仓库提供部署代码，不表示云服务器已上线。上线时必须从实际工作台容器验证 NAS 健康检查、业务鉴权和成片下载。
