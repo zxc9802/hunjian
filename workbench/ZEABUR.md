@@ -39,6 +39,14 @@ python -c 'from workbench.server import Settings,Nas; n=Nas(Settings.from_env())
 
 只有健康检查成功还不够，登录工作台后还需检查任务接口鉴权。若使用 Zeabur 的另一台服务器或托管集群，需要先为其建立到 NAS 的私网连接，不要直接把 NAS 8780 端口暴露到公网。
 
+## 音色试听
+
+GitHub 不包含私人参考音频。NAS 连接正常但“试听音色”灰色时，表示工作台尚未收到试听文件，不影响 NAS 使用自己的音色生成配音。
+
+部署后可用工作台密码登录 `/api/login`，在同一会话中向 `PUT /api/reference/voice` 上传与 NAS 主音色一致的 MP3 原始字节：`Content-Type: audio/mpeg`，最大 5 MB；与其他写入接口一样需要 `X-Workbench-Request: 1` 和正确的 `Origin`。该接口只配置网页试听，不修改 NAS 音色。上传和播放均受现有登录鉴权保护。
+
+文件保存到 `WORKBENCH_DATA/speaker-reference.mp3`，因此 `/data` 应挂载持久存储，避免重新部署后丢失。上传成功后刷新页面，`/api/connection` 的 `voice_available` 应为 `true`，`/api/reference/voice` 应返回 MP3 并支持 Range 播放。原 `VOICE_FILE` 配置仍作为未上传时的备用路径。
+
 ## 验收
 
 - `https://hunjian.qycm.top/` 返回工作台登录页面。

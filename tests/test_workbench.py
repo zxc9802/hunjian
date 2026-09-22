@@ -152,6 +152,47 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(Store(self.path).get('test-request-001')['state'],'running')
         self.assertEqual(len(self.nas.tasks),1)
 
+    def test_uploaded_voice_enables_cloud_preview_and_survives_restart(self):
+        self.settings.voice_file = self.path / 'missing-image-voice.mp3'
+        audio = b'ID3\x04\x00\x00\x00\x00\x00\x00preview-fixture'
+        self.assertFalse(self.client.get('/api/connection').json()['voice_available'])
+        self.assertEqual(self.client.get('/api/reference/voice').status_code, 404)
+        uploaded = self.client.put('/api/reference/voice', content=audio,
+                                   headers={**self.headers, 'Content-Type': 'audio/mpeg'})
+        self.assertEqual(uploaded.status_code, 200)
+        client = TestClient(create_app(self.settings, self.nas), base_url=self.settings.public_url)
+        self.assertTrue(client.get('/api/connection').json()['voice_available'])
+        self.assertEqual(client.get('/api/reference/voice').content, audio)
+        partial = client.get('/api/reference/voice', headers={'Range': 'bytes=0-2'})
+        self.assertEqual(partial.status_code, 206)
+        self.assertEqual(partial.content, b'ID3')
+        self.assertEqual(partial.headers['content-range'], f'bytes 0-2/{len(audio)}')
+        self.assertEqual(partial.headers['cache-control'], 'no-store')
+
+    def test_voice_upload_requires_login_and_same_origin(self):
+        settings = Settings('http://nas.local:8780', 'n'*40, self.path,
+                            'https://video.example.com', 'a-strong-test-password')
+        client = TestClient(create_app(settings, self.nas), base_url=settings.public_url)
+        headers = {'X-Workbench-Request': '1', 'Origin': settings.public_url, 'Content-Type': 'audio/mpeg'}
+        self.assertEqual(client.put('/api/reference/voice', content=b'ID3test', headers=headers).status_code, 401)
+        self.assertEqual(client.get('/api/reference/voice').status_code, 401)
+        self.assertEqual(client.put('/api/reference/voice', content=b'ID3test',
+                                   headers={**headers, 'Origin': 'https://other.example'}).status_code, 403)
+        self.assertFalse((self.path / 'speaker-reference.mp3').exists())
+
+    def test_invalid_voice_upload_preserves_previous_preview(self):
+        self.settings.voice_file = self.path / 'missing-image-voice.mp3'
+        audio = b'ID3\x04\x00\x00\x00\x00\x00\x00preview-fixture'
+        headers = {**self.headers, 'Content-Type': 'audio/mpeg'}
+        self.assertEqual(self.client.put('/api/reference/voice', content=audio, headers=headers).status_code, 200)
+        for data, content_type, status in ((audio, 'text/plain', 415), (b'', 'audio/mpeg', 400),
+                                           (b'<html>not audio</html>', 'audio/mpeg', 400),
+                                           (b'ID3' + b'x' * (5 * 1024 * 1024), 'audio/mpeg', 413)):
+            response = self.client.put('/api/reference/voice', content=data,
+                                       headers={**headers, 'Content-Type': content_type})
+            self.assertEqual(response.status_code, status)
+            self.assertEqual(self.client.get('/api/reference/voice').content, audio)
+
 
 if __name__ == '__main__':
     unittest.main()

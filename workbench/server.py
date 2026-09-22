@@ -250,6 +250,10 @@ def create_app(settings=None, nas=None):
     app.state.read_nas = read_nas
     app.state.sanitized_snapshot = sanitized_snapshot
 
+    def voice_path():
+        uploaded = settings.data_dir / 'speaker-reference.mp3'
+        return uploaded if uploaded.is_file() else settings.voice_file
+
     @app.get('/')
     def index():
         return FileResponse(ROOT / 'static/index.html')
@@ -300,7 +304,7 @@ def create_app(settings=None, nas=None):
         value = read_nas('/health')
         if value.get('status') != 'ok' or value.get('service') != 'hainan-mixer':
             raise HTTPException(502, 'NAS 返回了非预期的服务，请检查地址')
-        return {'connected': True, 'checked_at': time.time(), 'voice_available': settings.voice_file.is_file()}
+        return {'connected': True, 'checked_at': time.time(), 'voice_available': voice_path().is_file()}
 
     @app.get('/api/jobs', dependencies=[Depends(authorize)])
     def list_jobs():
@@ -361,9 +365,30 @@ def create_app(settings=None, nas=None):
 
     @app.get('/api/reference/voice', dependencies=[Depends(authorize)])
     def reference_voice():
-        if not settings.voice_file.is_file():
+        path = voice_path()
+        if not path.is_file():
             raise HTTPException(404, '此环境未配置试听音频')
-        return FileResponse(settings.voice_file, media_type='audio/mpeg')
+        return FileResponse(path, media_type='audio/mpeg')
+
+    @app.put('/api/reference/voice', dependencies=[Depends(authorize)])
+    async def upload_reference_voice(request: Request):
+        if request.headers.get('content-type', '').split(';')[0] != 'audio/mpeg':
+            raise HTTPException(415, '试听文件需要 MP3 格式')
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > 5 * 1024 * 1024:
+                raise HTTPException(413, '试听文件不能超过 5 MB')
+        if len(content) < 10 or not (content[:3] == b'ID3' or content[0] == 0xff and content[1] & 0xe0 == 0xe0):
+            raise HTTPException(400, '试听文件不是有效的 MP3')
+        temporary = settings.data_dir / ('.voice-' + secrets.token_hex(16) + '.tmp')
+        try:
+            with temporary.open('xb') as file:
+                file.write(content)
+            temporary.replace(settings.data_dir / 'speaker-reference.mp3')
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {'voice_available': True}
 
     app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
     return app
