@@ -271,6 +271,10 @@ class WorkbenchTests(unittest.TestCase):
                          video[:12])
         self.assertEqual(self.client.get(prefix + '/artifacts/video', headers={'Range': 'bytes=0-11'}).status_code, 206)
         self.assertEqual(self.client.get(prefix + '/artifacts/cover').content, cover)
+        self.nas.offline = True
+        self.assertEqual(self.client.get(prefix + '/artifacts/video').content, video)
+        self.assertEqual(self.client.get(prefix + '/artifacts/report').json()['sha256'], digest)
+        self.nas.offline = False
         self.nas.report_sha = 'f' * 64
         self.assertEqual(self.client.get(prefix + '/artifacts/video').content, b'test')
 

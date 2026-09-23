@@ -282,6 +282,24 @@ def create_app(settings=None, nas=None):
         except (requests.RequestException, ValueError):
             raise HTTPException(503, '暂时连接不到 NAS，请检查 NAS 和私网连接后重试') from None
 
+    def quality_report(job):
+        cached = settings.data_dir / 'artifacts' / f'{job["nas_id"]}-report.json'
+        try:
+            report = read_nas('/v1/jobs/' + job['nas_id'] + '/report')
+        except HTTPException as exc:
+            if exc.status_code != 503 or not cached.is_file():
+                raise
+            return json.loads(cached.read_text(encoding='utf-8'))
+        if report.get('passed') and re.fullmatch(r'[a-f0-9]{64}', report.get('sha256', '')):
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cached.with_name('.report-' + secrets.token_hex(16))
+            try:
+                temporary.write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
+                temporary.replace(cached)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return report
+
     def forward(job):
         if job['nas_id']:
             return job
@@ -547,8 +565,11 @@ def create_app(settings=None, nas=None):
         job = store.get(job_id)
         if not job['nas_id'] or (job['state'] != 'done' and artifact != 'report'):
             raise HTTPException(409, '成片尚未通过检查')
-        if artifact in ('video', 'cover'):
-            report = read_nas('/v1/jobs/' + job['nas_id'] + '/report')
+        if job['state'] == 'done' and artifact in ('video', 'cover', 'report'):
+            report = quality_report(job)
+            if artifact == 'report':
+                return JSONResponse(report, headers={'Content-Disposition':
+                    f'{"attachment" if download else "inline"}; filename="hainan-{job_id[:12]}-report.json"'})
             digest = report.get('sha256', '')
             if re.fullmatch(r'[a-f0-9]{64}', digest):
                 ext, media_type = ARTIFACTS[artifact]
