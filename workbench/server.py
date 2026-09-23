@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import re
@@ -328,7 +329,8 @@ def create_app(settings=None, nas=None):
     def list_music():
         try:
             return {'tracks': music_library.list_tracks()}
-        except Exception:
+        except Exception as exc:
+            logging.error('COS music list failed: %s', type(exc).__name__)
             raise HTTPException(503, '音乐库暂时无法连接，请检查腾讯 COS 环境变量和存储桶权限') from None
 
     @app.put('/api/music', dependencies=[Depends(authorize)], status_code=201)
