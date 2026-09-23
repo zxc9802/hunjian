@@ -547,6 +547,16 @@ def create_app(settings=None, nas=None):
         job = store.get(job_id)
         if not job['nas_id'] or (job['state'] != 'done' and artifact != 'report'):
             raise HTTPException(409, '成片尚未通过检查')
+        if artifact in ('video', 'cover'):
+            report = read_nas('/v1/jobs/' + job['nas_id'] + '/report')
+            digest = report.get('sha256', '')
+            if re.fullmatch(r'[a-f0-9]{64}', digest):
+                ext, media_type = ARTIFACTS[artifact]
+                cached = settings.data_dir / 'artifacts' / f'{job["nas_id"]}-{digest}.{ext}'
+                if cached.is_file():
+                    return FileResponse(cached, media_type=media_type,
+                                        filename=f'hainan-{job_id[:12]}-{artifact}.{ext}',
+                                        content_disposition_type='attachment' if download else 'inline')
         headers = {}
         for header in ('Range', 'If-Range'):
             if request.headers.get(header):
@@ -571,6 +581,49 @@ def create_app(settings=None, nas=None):
             finally:
                 upstream.close()
         return StreamingResponse(chunks(), status_code=upstream.status_code, media_type=media_type, headers=response_headers)
+
+    @app.put('/api/jobs/{job_id}/artifact-cache/{artifact}', dependencies=[Depends(authorize)])
+    async def cache_artifact(job_id: str, artifact: str, request: Request):
+        if artifact not in ('video', 'cover'):
+            raise HTTPException(404, '文件不存在')
+        job = store.get(job_id)
+        if job['state'] != 'done' or not job['nas_id']:
+            raise HTTPException(409, '成片尚未通过检查')
+        report = read_nas('/v1/jobs/' + job['nas_id'] + '/report')
+        digest = report.get('sha256', '')
+        if not re.fullmatch(r'[a-f0-9]{64}', digest) or not report.get('passed'):
+            raise HTTPException(409, 'NAS 质检报告无效')
+        expected = request.headers.get('x-artifact-sha256', '')
+        if not re.fullmatch(r'[a-f0-9]{64}', expected):
+            raise HTTPException(400, '缺少文件 SHA256')
+        ext = ARTIFACTS[artifact][0]
+        folder = settings.data_dir / 'artifacts'
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f'{job["nas_id"]}-{digest}.{ext}'
+        temporary = folder / ('.upload-' + secrets.token_hex(16))
+        checksum = hashlib.sha256()
+        size = 0
+        limit = 512 * 1024 * 1024 if artifact == 'video' else 20 * 1024 * 1024
+        try:
+            with temporary.open('xb') as output:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(413, '文件过大')
+                    checksum.update(chunk)
+                    output.write(chunk)
+            if size < 128 or checksum.hexdigest() != expected or artifact == 'video' and expected != digest:
+                raise HTTPException(400, '文件与 NAS 质检报告不一致')
+            with temporary.open('rb') as source:
+                header = source.read(12)
+            if artifact == 'cover' and not header.startswith(b'\x89PNG\r\n\x1a\n'):
+                raise HTTPException(400, '封面不是 PNG 文件')
+            if artifact == 'video' and header[4:8] != b'ftyp':
+                raise HTTPException(400, '成片不是 MP4 文件')
+            temporary.replace(target)
+            return {'sha256': checksum.hexdigest(), 'size': size}
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @app.get('/api/reference/voice', dependencies=[Depends(authorize)])
     def reference_voice():

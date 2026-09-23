@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import sys
 import tempfile
@@ -22,6 +23,7 @@ class FakeNas:
         self.offline = False
         self.state = 'queued'
         self.capabilities = []
+        self.report_sha = ''
 
     def request(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
@@ -58,6 +60,8 @@ class FakeNas:
             response._content = b'cover-frame'
             response._content_consumed = True
             return response
+        elif path.endswith('/report'):
+            value = {'sha256': self.report_sha, 'passed': True}
         elif method == 'POST':
             key = kwargs['headers']['Idempotency-Key']
             self.tasks.setdefault(key, {'id': 'a' * 32, 'state': self.state})
@@ -246,6 +250,29 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/cover').content, b'cover-frame')
         self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/private.env').status_code,404)
         self.assertEqual(self.client.get('/api/jobs/unknown/artifacts/video').status_code,404)
+
+    def test_verified_artifact_cache_serves_video_ranges_and_cover(self):
+        video = b'\x00\x00\x00\x18ftypmp42' + b'v' * 256
+        cover = b'\x89PNG\r\n\x1a\n' + b'p' * 256
+        digest = hashlib.sha256(video).hexdigest()
+        self.submit()
+        self.nas.state = 'done'
+        self.client.get('/api/jobs/test-request-001')
+        self.nas.report_sha = digest
+        prefix = '/api/jobs/test-request-001'
+        for artifact, content in (('video', video), ('cover', cover)):
+            url = prefix + '/artifact-cache/' + artifact
+            headers = {**self.headers, 'X-Artifact-SHA256': hashlib.sha256(content).hexdigest()}
+            self.assertEqual(self.client.put(url, content=b'bad', headers=headers).status_code, 400)
+            response = self.client.put(url, content=content, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['sha256'], hashlib.sha256(content).hexdigest())
+        self.assertEqual(self.client.get(prefix + '/artifacts/video', headers={'Range': 'bytes=0-11'}).content,
+                         video[:12])
+        self.assertEqual(self.client.get(prefix + '/artifacts/video', headers={'Range': 'bytes=0-11'}).status_code, 206)
+        self.assertEqual(self.client.get(prefix + '/artifacts/cover').content, cover)
+        self.nas.report_sha = 'f' * 64
+        self.assertEqual(self.client.get(prefix + '/artifacts/video').content, b'test')
 
     def test_failed_quality_report_is_available_but_video_stays_blocked(self):
         self.submit()
