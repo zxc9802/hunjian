@@ -330,7 +330,8 @@ def create_app(settings=None, nas=None):
         try:
             return {'tracks': music_library.list_tracks()}
         except Exception as exc:
-            logging.error('COS music list failed: %s', type(exc).__name__)
+            logging.error('COS music list failed: %s id_set=%s key_set=%s', type(exc).__name__,
+                          bool(os.environ.get('COS_SECRET_ID')), bool(os.environ.get('COS_SECRET_KEY')))
             raise HTTPException(503, '音乐库暂时无法连接，请检查腾讯 COS 环境变量和存储桶权限') from None
 
     @app.put('/api/music', dependencies=[Depends(authorize)], status_code=201)
