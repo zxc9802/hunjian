@@ -213,6 +213,15 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/private.env').status_code,404)
         self.assertEqual(self.client.get('/api/jobs/unknown/artifacts/video').status_code,404)
 
+    def test_failed_quality_report_is_available_but_video_stays_blocked(self):
+        self.submit()
+        self.nas.state = 'failed'
+        self.client.get('/api/jobs/test-request-001')
+        prefix = '/api/jobs/test-request-001/artifacts/'
+        self.assertEqual(self.client.get(prefix + 'report').status_code, 200)
+        self.assertEqual(self.nas.calls[-1][1], '/v1/jobs/' + 'a' * 32 + '/report')
+        self.assertEqual(self.client.get(prefix + 'video').status_code, 409)
+
     def test_offline_nas_keeps_task_and_does_not_resubmit_or_leak_exception(self):
         self.submit()
         self.nas.offline = True

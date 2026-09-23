@@ -167,6 +167,8 @@ function updateJobView(job) {
   $('reconcile').textContent = job.state === 'rejected' ? '重新提交原任务' : '核对提交';
   $('resume').hidden = !['failed','interrupted'].includes(job.state);
   $('resume').textContent = `从${job.snapshot?.checkpoint || '保存进度'}继续`;
+  $('failed-report').hidden = !(['failed','interrupted'].includes(job.state) && job.snapshot?.report_available);
+  $('failed-report').href = `/api/jobs/${encodeURIComponent(job.id)}/artifacts/report`;
   $('job-message').textContent = job.state === 'interrupted'
     ? `${job.error ? job.error + ' ' : ''}已完成内容保留在 NAS。修正问题后，可点击续作。`
     : job.error || ({queued:'任务已进入 NAS 队列，轮到后会自动开始。',running:logs.at(-1) || '正在准备素材，请稍候。',done:'制作完成。成片已通过画面与声音检查，可以播放或下载。',failed:'任务未完成，请查看日志。已生成的中间文件保留在 NAS。'})[job.state] || '任务已记录，正在核对提交结果。';

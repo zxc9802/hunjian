@@ -88,8 +88,11 @@ class FinishTests(unittest.TestCase):
             old_music.write_bytes(b'previous music')
             plan = {'narration': 'voice.wav', 'scenes': [{'end': 2}],
                     'music_settings': {'provider': 'suno_music_open', 'path': str(old_music)}}
-            result = finish.deliver(plan, tmp, log=lambda _: None)
+            messages = []
+            log = messages.append
+            result = finish.deliver(plan, tmp, log=log)
             self.assertEqual(result, Path(tmp)/'video.mp4')
+            self.assertIs(render.call_args.kwargs.get('log'), log)
             self.assertEqual(render.call_args.args[0]['narration'], 'voice.wav')
             self.assertNotIn('music_settings', plan)
             mix.assert_not_called()

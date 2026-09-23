@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 from api import Models
+from captions import rebuild as rebuild_captions
 from matcher import matching_catalog, judge_videos, write_json
 import media
 import music
@@ -149,10 +150,12 @@ def deliver(plan, output, width=1920, height=1080, catalog='data/catalog', music
         plan.setdefault('music_settings', {}).update({'path': str(Path(music_file).resolve()),
                                                      'narration_lufs': music.VOICE_LUFS,
                                                      'music_lufs': music.MUSIC_LUFS, 'ducking': True})
+    captions_only = False
     for attempt in range(1, 3):
         write_json(output/'plan.json', plan)
         log('导出画面、配音与字幕…')
-        video = media.render(plan, output, width, height)
+        video = (rebuild_captions(plan, output, width, height) if captions_only
+                 else media.render(plan, output, width, height, log=log))
         if plan.get('narration') and music_file:
             video = music.mix(video, plan['narration'], music_file, output, plan['scenes'][-1]['end'])
         report = quality.review(video, plan, output, models, log)
@@ -160,11 +163,21 @@ def deliver(plan, output, width=1920, height=1080, catalog='data/catalog', music
         if report['passed']:
             log('Gemini 成片检查通过，音视频时间轴一致')
             return video
-        errors = [i for r in report['segments'] for i in r['issues'] if i['severity'] == 'error']
+        errors = quality.blocking_issues(report)
+        reasons = [quality.describe_issue(issue) for issue in errors]
+        for reason in reasons:
+            log('检查发现问题：' + reason)
         replace = {i.get('scene') for i in errors if i.get('type') in ('freeze', 'black_frame', 'visual_mismatch')}
         replace = {i for i in replace if type(i) is int and 1 <= i <= len(plan['scenes'])}
-        if attempt == 2 or not replace:
+        subtitle_errors = any(issue.get('type') == 'subtitle' for issue in errors)
+        if attempt == 2 or (not replace and not subtitle_errors):
             break
-        log('检查发现画面问题，重新选择相关场景素材后复查')
-        prepare_shots(plan, catalog, models, log, replace, checkpoint=output/'plan.json')
-    raise ValueError('成片检查未通过。查看 quality-report.json，修正后重新 render；当前文件是待修订版本，不能标为完成')
+        if subtitle_errors:
+            plan['caption_layout'] = 'safe'
+            captions_only = not replace
+            log('正在修正字幕：明确换行、调整字号和安全边距；复用原配音与镜头后重新检查')
+        if replace:
+            log('正在修正画面：重新选择场景 ' + '、'.join(map(str, sorted(replace))) + ' 的素材后复查')
+            prepare_shots(plan, catalog, models, log, replace, checkpoint=output/'plan.json')
+    raise ValueError('成片检查未通过：\n' + '\n'.join(reasons or ['检查未提供具体原因，需核对检查报告'])
+                     + '\n已保留配音、镜头和检查报告，可根据上述原因修正后继续。')

@@ -54,6 +54,7 @@ New-Item -ItemType Directory -Force data/nas-deploy
 - **部署新 NAS：** 先读 [NAS 部署与接口说明](video-material-match/references/nas-api.md)。部署模板中的路径、UID/GID 和网络地址对应原环境，迁移时必须调整。`seed/catalog/` 和 `private/runtime.env` 需要单独准备，不在仓库中。
 
 源视频按 8 秒划片、每秒 1 帧建立多模态索引。匹配经过 FAISS 召回、rerank 和前三名视觉核验；剪辑读取原视频，不使用低清索引代理。字幕采用场景级配音时间轴。
+导出时最多两个镜头并行转码，每个 FFmpeg 限制编码、解码和滤镜线程；镜头完成顺序不影响成片顺序。制作日志记录逐镜头耗时与字幕合成、音频合并耗时。实际提速取决于 NAS 的 CPU 配额和负载。
 NAS 新版服务会自动发现 `/media` 下稳定的新视频并增量入库，后续混剪任务可直接检索。此功能需要重新构建并部署 NAS 镜像；仅更新工作台网页不会启用。
 
 ## 部署到新加坡服务器

@@ -9,6 +9,34 @@ from matcher import write_json
 import media
 
 
+def blocking_issues(report):
+    issues = [{'type': 'technical', 'severity': 'error', 'problem': problem}
+              for problem in report.get('technical', {}).get('issues', [])]
+    for segment in report.get('segments', []):
+        errors = [issue for issue in segment.get('issues', []) if issue.get('severity') == 'error']
+        for issue in errors:
+            issues.append({'start': segment.get('start'),
+                           'end': segment.get('start', 0) + segment.get('duration', 0), **issue})
+        if segment.get('passed') is False and not errors:
+            issues.append({'type': 'review', 'severity': 'error', 'start': segment.get('start'),
+                           'problem': '检查判定未通过，但没有提供明确错误证据，需重新核对该段检查结论'})
+    return issues
+
+
+def describe_issue(issue):
+    location = f'场景 {issue["scene"]} · ' if issue.get('scene') else ''
+    start, end = issue.get('start'), issue.get('end')
+    if isinstance(start, (int, float)) and math.isfinite(start):
+        location += f'{start:.2f}'
+        if isinstance(end, (int, float)) and math.isfinite(end):
+            location += f'–{end:.2f}'
+        location += ' 秒：'
+    message = location + issue['problem']
+    if issue.get('suggestion'):
+        message += '；建议：' + issue['suggestion']
+    return message
+
+
 def inspect_media(video, plan):
     info = json.loads(media.run(['ffprobe', '-v', 'error', '-show_streams',
                                  '-show_format', '-of', 'json', str(video)]))

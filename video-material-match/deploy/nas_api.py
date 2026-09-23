@@ -319,6 +319,7 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
         result['checkpoint'] = jobs.checkpoint(job_id)
         if result['state'] == 'done':
             result['video_url'] = f'/v1/jobs/{job_id}/video'
+        if (jobs.root / 'outputs' / job_id / 'quality-report.json').is_file():
             result['report_url'] = f'/v1/jobs/{job_id}/report'
         return result
 
@@ -373,6 +374,11 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
     @app.get('/v1/jobs/{job_id}/{artifact}', dependencies=[Depends(authorize)])
     def download(job_id: str, artifact: str):
         job = jobs.get(job_id)
+        if artifact == 'report' and job['state'] != 'done':
+            report = jobs.root / 'outputs' / job_id / 'quality-report.json'
+            if not report.is_file():
+                raise HTTPException(404, '检查报告尚未生成')
+            return FileResponse(report, filename='quality-report.json')
         if job['state'] != 'done':
             raise HTTPException(409, '成片尚未通过检查')
         report_name = (job['result'][:-4] + '/quality-report.json') if job['result'].startswith('edit-') else 'quality-report.json'

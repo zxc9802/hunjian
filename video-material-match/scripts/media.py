@@ -4,7 +4,9 @@ import math
 import re
 import subprocess
 import unicodedata
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+from time import perf_counter
 
 SDR_FLAGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709',
              '-colorspace', 'bt709', '-color_range', 'tv']
@@ -88,24 +90,26 @@ def write_srt(scenes, target):
         for i, s in enumerate(scenes)) + '\n', encoding='utf-8')
 
 
-def render(plan, output, width=1920, height=1080):
+def render(plan, output, width=1920, height=1080, log=print):
     """Silent, captioned storyboard. Missing scenes remain explicit black slates."""
     import random
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     fps = plan['fps']
     segments, cut_log, color_cache = [], [], {}
-    pieces = []
+    pieces, commands = [], []
     for i, scene in enumerate(plan['scenes']):
         length = round(scene['end'] - scene['start'], 6)
         shots = scene.get('shots') or [{'selected': scene.get('match', {}).get('selected'), 'duration': length}]
         if abs(sum(s['duration'] for s in shots) - length) > .001:
             raise ValueError(f'场景 {i+1} 的镜头总时长与配音时间轴不一致')
         pieces.extend((i, j, shot) for j, shot in enumerate(shots))
+    log(f'开始镜头转码：共 {len(pieces)} 个镜头，最多 2 路并行')
+    started = perf_counter()
     for i, j, shot in pieces:
         target = output / f'clip-{i+1:03}-{j+1:02}.mp4'
         selected, length = shot['selected'], shot['duration']
-        args = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y']
+        args = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-threads', '2']
         if selected:
             source = Path(selected['path'])
             from matcher import file_stamp
@@ -130,25 +134,64 @@ def render(plan, output, width=1920, height=1080):
         else:
             args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r={fps}', '-an']
             cut_log.append({'scene': i+1, 'missing': True})
-        args += ['-t', str(length), '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
+        args += ['-t', str(length), '-c:v', 'libx264', '-threads', '2', '-filter_threads', '1',
+                 '-preset', 'fast', '-crf', '20',
                  '-pix_fmt', 'yuv420p', '-map_metadata', '-1', *SDR_FLAGS,
                  '-video_track_timescale', '25000', str(target)]
-        run(args)
+        commands.append((i, j, args))
         segments.append(target.name)
+
+    def transcode(args):
+        started = perf_counter()
+        run(args)
+        return perf_counter() - started
+
+    jobs, completed = iter(commands), 0
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pending = {}
+        for _ in range(min(2, len(commands))):
+            i, j, args = next(jobs)
+            pending[executor.submit(transcode, args)] = (i, j)
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            # Inspect the entire completed batch before scheduling any more work.
+            for future in done:
+                i, j = pending.pop(future)
+                try:
+                    elapsed = future.result()
+                except Exception as exc:
+                    raise RuntimeError(f'场景 {i+1} 镜头 {j+1} 转码失败：{exc}') from exc
+                completed += 1
+                log(f'镜头完成 {completed}/{len(commands)}：场景 {i+1} 镜头 {j+1}，耗时 {elapsed:.2f} 秒')
+            # Logging can block while another clip finishes; inspect it before refilling.
+            if any(future.done() for future in pending):
+                continue
+            for _ in range(2-len(pending)):
+                job = next(jobs, None)
+                if job is None:
+                    break
+                i, j, args = job
+                pending[executor.submit(transcode, args)] = (i, j)
+    log(f'镜头转码完成：{completed}/{len(commands)}，耗时 {perf_counter()-started:.2f} 秒')
     # Relative safe generated filenames avoid FFmpeg quoting problems with Chinese paths.
     (output / 'concat.txt').write_text(''.join(f"file '{s}'\n" for s in segments), encoding='utf-8')
     write_srt(plan['scenes'], output / ('captions.srt' if plan.get('narration') else 'estimated.srt'))
     display = [{**s, 'text': s['text'] + ('\n【缺少匹配素材】' if not s['match']['selected'] else '')}
                for s in plan['scenes']]
     write_srt(display, output / 'display.srt')
-    caption_style = (f'PlayResX={width},PlayResY={height},FontName=Microsoft YaHei,'
-                     f'FontSize={round(min(width,height)*.075)},Outline=3,MarginV={round(height*.16)}')
-    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-f', 'concat',
+    from captions import write_display
+    write_display(display, output / 'display.ass', width, height, plan.get('caption_layout') == 'safe')
+    log('开始合成字幕…')
+    started = perf_counter()
+    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-threads', '4', '-f', 'concat',
          '-safe', '1', '-i', 'concat.txt', '-vf',
-         f"subtitles=display.srt:force_style='{caption_style}'",
-         '-an', '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
+         'ass=display.ass',
+         '-an', '-c:v', 'libx264', '-threads', '4', '-filter_threads', '1',
+         '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
          '-map_metadata', '-1', *SDR_FLAGS, '-movflags', '+faststart', 'preview.mp4'], cwd=output)
+    log(f'字幕合成完成：耗时 {perf_counter()-started:.2f} 秒')
     if plan.get('narration'):
+        started = perf_counter()
         # Never use -shortest to hide a truncated picture or narration track.
         expected = plan['scenes'][-1]['end']
         tolerance = 1 / fps + .001
@@ -159,5 +202,6 @@ def render(plan, output, width=1920, height=1080):
         run(['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y','-i','preview.mp4',
              '-i',plan['narration'],'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac',
              '-b:a','192k','-movflags','+faststart','video.mp4'],cwd=output)
+        log(f'配音合成完成：耗时 {perf_counter()-started:.2f} 秒')
     (output / 'cuts.json').write_text(json.dumps(cut_log, ensure_ascii=False, indent=2), encoding='utf-8')
     return output / ('video.mp4' if plan.get('narration') else 'preview.mp4')

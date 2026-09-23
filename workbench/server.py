@@ -200,6 +200,7 @@ def create_app(settings=None, nas=None):
         return {'state': value['state'], 'logs': [clean(x) for x in value.get('logs', [])][-100:],
                 'error': clean(value['error']) if value.get('error') else None,
                 'checkpoint': value.get('checkpoint'),
+                'report_available': bool(value.get('report_url')),
                 'created': value.get('created'), 'updated': value.get('updated')}
 
     @app.middleware('http')
@@ -517,7 +518,7 @@ def create_app(settings=None, nas=None):
         if artifact not in ARTIFACTS:
             raise HTTPException(404, '文件不存在')
         job = store.get(job_id)
-        if job['state'] != 'done' or not job['nas_id']:
+        if not job['nas_id'] or (job['state'] != 'done' and artifact != 'report'):
             raise HTTPException(409, '成片尚未通过检查')
         headers = {}
         for header in ('Range', 'If-Range'):
@@ -527,6 +528,9 @@ def create_app(settings=None, nas=None):
             upstream = nas.request('GET', '/v1/jobs/' + job['nas_id'] + '/' + artifact, headers=headers, stream=True)
         except requests.RequestException:
             raise HTTPException(503, '无法读取成片，请检查 NAS 连接后重试') from None
+        if upstream.status_code == 404 and artifact == 'report':
+            upstream.close()
+            raise HTTPException(404, '检查报告尚未生成')
         if upstream.status_code not in (200, 206, 416):
             upstream.close()
             raise HTTPException(502, 'NAS 暂时无法提供此文件，请稍后重试')

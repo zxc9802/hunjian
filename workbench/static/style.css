@@ -12,3 +12,4 @@
 @media(max-width:760px){.cover-editor{padding:17px;margin-top:24px}.cover-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.cover-choice{padding:2px}.cover-choice span{font-size:10px}.shot-card{grid-template-columns:1fr;padding:14px}.shot-heading,.shot-card p{grid-column:1}.shot-heading strong{font-size:12px}}
 .music-section{display:grid;gap:10px}.music-section h2,.music-section p{margin:0}.music-section label{font-size:13px}.music-upload{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.music-upload input{min-width:0;max-width:100%;flex:1 1 230px}.music-upload button{flex:0 0 auto}.music-section #music-status{min-height:20px}
 .music-list{list-style:none;margin:0;padding:0;max-height:280px;overflow-y:auto}.music-list li{display:grid;gap:8px;padding:12px 0;border-top:1px solid var(--line)}.music-list span{font-size:13px;overflow-wrap:anywhere}.music-list audio{width:100%;min-width:0;height:40px}
+#job-message{white-space:pre-line}
