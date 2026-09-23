@@ -250,6 +250,73 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(Store(self.path).get('test-request-001')['state'],'running')
         self.assertEqual(len(self.nas.tasks),1)
 
+    def test_history_expires_after_three_days_without_removing_active_jobs_or_files(self):
+        now, retention = 2_000_000_000, 3 * 86400
+        store = self.app.state.store
+        voice = self.path / 'speaker-reference.mp3'
+        voice.write_bytes(b'keep this file')
+        with patch('workbench.server.time.time', return_value=now - retention):
+            for state in ('done', 'failed', 'interrupted', 'rejected', 'queued', 'running', 'submitting', 'uncertain'):
+                store.reserve('old-' + state, self.spec)
+                store.update('old-' + state, state)
+        with patch('workbench.server.time.time', return_value=now - retention + 1):
+            store.reserve('recent-done', self.spec)
+            store.update('recent-done', 'done')
+        with patch('workbench.server.time.time', return_value=now):
+            response = self.client.get('/api/jobs')
+        self.assertEqual(response.status_code, 200)
+        expected = {'recent-done', 'old-queued', 'old-running', 'old-submitting', 'old-uncertain'}
+        self.assertEqual({job['id'] for job in response.json()['jobs']}, expected)
+        with store.connect() as db:
+            self.assertEqual({row['id'] for row in db.execute('SELECT id FROM jobs')}, expected)
+        self.assertEqual(voice.read_bytes(), b'keep this file')
+        self.assertEqual(self.nas.calls, [])
+
+    def test_expired_history_cannot_be_opened_directly(self):
+        with patch('workbench.server.time.time', return_value=2_000_000_000):
+            self.submit()
+            self.app.state.store.update('test-request-001', 'done')
+        with patch('workbench.server.time.time', return_value=2_000_000_000 + 3 * 86400):
+            self.assertEqual(self.client.get('/api/jobs/test-request-001').status_code, 404)
+            self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/video').status_code, 404)
+
+    def test_startup_cleans_expired_history(self):
+        with patch('workbench.server.time.time', return_value=2_000_000_000):
+            self.submit()
+            self.app.state.store.update('test-request-001', 'done')
+        with patch('workbench.server.time.time', return_value=2_000_000_000 + 3 * 86400):
+            restarted = Store(self.path)
+        with restarted.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM jobs').fetchone()[0], 0)
+
+    def test_health_check_cleans_expired_history_without_nas_access(self):
+        with patch('workbench.server.time.time', return_value=2_000_000_000):
+            self.app.state.store.reserve('expired-record', self.spec)
+            self.app.state.store.update('expired-record', 'done')
+        with patch('workbench.server.time.time', return_value=2_000_000_000 + 3 * 86400):
+            self.assertEqual(self.client.get('/health').status_code, 200)
+        with self.app.state.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM jobs').fetchone()[0], 0)
+        self.assertEqual(self.nas.calls, [])
+
+    def test_status_refresh_does_not_extend_retention_but_resuming_does(self):
+        store = self.app.state.store
+        with patch('workbench.server.time.time', return_value=2_000_000_000):
+            self.submit()
+            self.nas.state = 'failed'
+            first = self.client.get('/api/jobs/test-request-001').json()
+        with patch('workbench.server.time.time', return_value=2_000_000_100):
+            refreshed = self.client.get('/api/jobs/test-request-001').json()
+            self.assertEqual(refreshed['updated'], first['updated'])
+            resumed = self.client.post('/api/jobs/test-request-001/resume', headers=self.headers)
+            self.assertEqual(resumed.status_code, 202)
+        with patch('workbench.server.time.time', return_value=2_000_000_200):
+            store.update('test-request-001', 'done')
+        with patch('workbench.server.time.time', return_value=2_000_000_000 + 3 * 86400):
+            self.assertEqual(self.client.get('/api/jobs/test-request-001').json()['state'], 'done')
+        with patch('workbench.server.time.time', return_value=2_000_000_200 + 3 * 86400):
+            self.assertEqual(self.client.get('/api/jobs/test-request-001').status_code, 404)
+
     def test_uploaded_voice_enables_cloud_preview_and_survives_restart(self):
         self.settings.voice_file = self.path / 'missing-image-voice.mp3'
         audio = b'ID3\x04\x00\x00\x00\x00\x00\x00preview-fixture'

@@ -28,6 +28,7 @@ ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'report': ('json', 'application/json
              'captions': ('srt', 'application/x-subrip'), 'plan': ('json', 'application/json'),
              'cuts': ('json', 'application/json')}
 TERMINAL = {'done', 'failed', 'interrupted'}
+HISTORY_RETENTION_SECONDS = 3 * 86400
 
 
 @dataclass
@@ -83,6 +84,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, expires REAL);
                 CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT, created REAL);
             ''')
+        self.prune_history()
 
     @contextmanager
     def connect(self):
@@ -103,6 +105,7 @@ class Store:
         return value
 
     def get(self, job_id):
+        self.prune_history()
         with self.connect() as db:
             row = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not row:
@@ -124,12 +127,20 @@ class Store:
     def update(self, job_id, state, *, nas_id=None, snapshot=None, error=None):
         with self.connect() as db:
             db.execute('''UPDATE jobs SET state=?, nas_id=coalesce(?,nas_id),
-                snapshot=coalesce(?,snapshot), error=?, updated=? WHERE id=?''',
+                snapshot=coalesce(?,snapshot), error=?,
+                updated=CASE WHEN state=? AND state IN ('done','failed','interrupted','rejected')
+                    THEN updated ELSE ? END WHERE id=?''',
                        (state, nas_id, json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None,
-                        error, time.time(), job_id))
+                        error, state, time.time(), job_id))
         return self.get(job_id)
 
+    def prune_history(self):
+        with self.connect() as db:
+            db.execute("DELETE FROM jobs WHERE state IN ('done','failed','interrupted','rejected') AND updated<=?",
+                       (time.time() - HISTORY_RETENTION_SECONDS,))
+
     def list(self):
+        self.prune_history()
         with self.connect() as db:
             return [self.decode(row) for row in db.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 100')]
 
@@ -274,6 +285,7 @@ def create_app(settings=None, nas=None):
 
     @app.get('/health')
     def health():
+        store.prune_history()
         return {'status': 'ok', 'service': 'hainan-workbench'}
 
     @app.get('/api/session')

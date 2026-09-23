@@ -35,6 +35,10 @@ Zeabur 官方说明：[Dockerfile 部署](https://zeabur.com/docs/en-US/deploy/m
 
 在正式创建任务前，为 `/data` 配置持久存储，并确认 UID 10001 可写。这里保存网页任务记录和会话，源素材仍留在 NAS。若目录已有数据，先备份再挂载，避免覆盖。参见 [Zeabur Volumes](https://zeabur.com/docs/en-US/operations/data/volumes)。
 
+在服务的「硬盘」页面添加硬盘：ID 为 `workbench-data`，挂载目录为 `/data`，与 `WORKBENCH_DATA` 保持一致。保留同一服务和这块硬盘，正常重启及重新部署不会清空历史数据库。
+
+工作台自动保留已结束记录 3 天（72 小时），从记录结束状态时计时；刷新状态不延长时间，续作后重新计时。启动、健康检查及读取记录时清理过期的已完成、失败、中断和被拒绝记录，正在制作或等待核对的任务不受影响。此清理仅涉及工作台数据库，不删除 NAS 中的素材或成片。
+
 在新加坡服务器宿主机安装 Tailscale 不等于 Zeabur 容器一定可达 NAS。应在服务命令行中实际执行：
 
 ```sh
