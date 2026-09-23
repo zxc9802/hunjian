@@ -4,7 +4,7 @@ const labels = {submitting:'正在提交', uncertain:'等待核对', rejected:'�
 const activeStates = new Set(['queued','running','submitting','uncertain']);
 const terminalStates = new Set(['done','failed','interrupted']);
 const sample = '我认为全中国冬天最舒服的城市就是海南的三亚和陵水，这俩地方冬天气温25-28度，我每年都会带着爸妈来这里过冬，就住在三亚海棠湾的这家高端旅居基地。\n\n我比较喜欢这里的一点，就是爸妈住进来以后基本不用操什么心。住宿、吃饭、水电、网络这些都包含了，每天一日三餐都是自助餐，房间也会定期有人打扫。\n\n平时想活动一下，可以泡温泉、游泳、健身，园区里面每天也有不少同龄人一起散步、聊天、参加活动。这里还有医生全天在岗。\n\n如果你也想带爸妈来海南过冬，评论区扣1，我把价格和地址发给你看看。';
-let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0;
+let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0, musicSelection = '';
 const voice = new Audio('/api/reference/voice');
 
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4000); }
@@ -22,11 +22,24 @@ async function api(path, options = {}) {
   return value;
 }
 function draftSpec() {
-  return {text:$('editor').value, emotion_alpha:.8, width:1080, height:1920};
+  return {text:$('editor').value, emotion_alpha:.8, width:1080, height:1920, music_key:musicSelection || null};
 }
 function setSpec(spec) {
   $('editor').value = spec.text || '';
+  musicSelection = spec.music_key || '';
+  $('music-select').value = musicSelection;
   updateControls(spec);
+}
+async function loadMusic() {
+  try {
+    const tracks = (await api('/api/music')).tracks;
+    $('music-select').replaceChildren(new Option('自动生成配乐', ''));
+    for (const track of tracks) $('music-select').add(new Option(`${track.name} · ${(track.size / 1024 / 1024).toFixed(1)} MB`, track.key));
+    if (musicSelection && !tracks.some(track => track.key === musicSelection))
+      $('music-select').add(new Option('已选曲目（当前未在列表中）', musicSelection));
+    $('music-select').value = musicSelection;
+    $('music-status').textContent = `${tracks.length} 首音乐已存入腾讯 COS`;
+  } catch (error) { $('music-status').textContent = error.message; }
 }
 function updateControls(spec = selected?.spec || draftSpec()) {
   $('counter').value = `${$('editor').value.length} / 6000`;
@@ -43,6 +56,9 @@ function saveDraft() {
 }
 function setReadOnly(readonly) {
   $('editor').readOnly = readonly;
+  $('music-select').disabled = readonly;
+  $('music-file').disabled = readonly;
+  $('music-upload').disabled = readonly;
   $('example').hidden = readonly;
   $('create-actions').hidden = readonly;
   $('job-actions').hidden = !readonly;
@@ -134,8 +150,10 @@ function updateJobView(job) {
   $('log-count').textContent = logs.length ? `(${logs.length})` : '';
   $('reconcile').hidden = !['uncertain','submitting','rejected'].includes(job.state);
   $('reconcile').textContent = job.state === 'rejected' ? '重新提交原任务' : '核对提交';
+  $('resume').hidden = !['failed','interrupted'].includes(job.state);
+  $('resume').textContent = `从${job.snapshot?.checkpoint || '保存进度'}继续`;
   $('job-message').textContent = job.state === 'interrupted'
-    ? `${job.error ? job.error + ' ' : ''}本页面暂不支持中断续作。请查看制作日志，核对已生成的内容后，可“沿用文案新建”，这会创建新任务。`
+    ? `${job.error ? job.error + ' ' : ''}已完成内容保留在 NAS。修正问题后，可点击续作。`
     : job.error || ({queued:'任务已进入 NAS 队列，轮到后会自动开始。',running:logs.at(-1) || '正在准备素材，请稍候。',done:'制作完成。成片已通过画面与声音检查，可以播放或下载。',failed:'任务未完成，请查看日志。已生成的中间文件保留在 NAS。'})[job.state] || '任务已记录，正在核对提交结果。';
   $('preview-title').textContent = {queued:'正在等待制作',running:'画面正在成形',failed:'这次制作没有完成',interrupted:'制作暂时中断',uncertain:'正在等待提交确认',rejected:'任务尚未开始'}[job.state] || '等待制作';
   $('preview-subtitle').textContent = terminalStates.has(job.state) && job.state !== 'done' ? '请查看左侧原因与制作日志。' : '可以离开页面，稍后回来查看。';
@@ -281,6 +299,32 @@ $('reconcile').onclick = async () => {
   catch (error) { if (selected?.id === id) $('poll-error').textContent = error.message; }
   finally { $('reconcile').disabled = false; }
 };
+$('resume').onclick = async () => {
+  const id = selected?.id; if (!id) return;
+  $('resume').disabled = true;
+  try {
+    const job = await api(`/api/jobs/${encodeURIComponent(id)}/resume`, {method:'POST'});
+    if (selected?.id === id) { updateJobView(job); pollJob(id); }
+  } catch (error) { if (selected?.id === id) $('poll-error').textContent = error.message; }
+  finally { $('resume').disabled = false; }
+};
+$('music-select').onchange = () => { musicSelection = $('music-select').value; saveDraft(); };
+$('music-upload').onclick = async () => {
+  const file = $('music-file').files?.[0];
+  if (!file) { $('music-status').textContent = '请先选择音乐文件'; return; }
+  if (file.size > 100 * 1024 * 1024) { $('music-status').textContent = '音乐文件不能超过 100 MB'; return; }
+  $('music-upload').disabled = true; $('music-status').textContent = '正在上传音乐到腾讯 COS…';
+  try {
+    const response = await fetch('/api/music', {method:'PUT', body:file, credentials:'same-origin',
+      headers:{'Content-Type':'application/octet-stream','X-Workbench-Request':'1','X-Music-Name':encodeURIComponent(file.name)},
+      signal:AbortSignal.timeout(180000)});
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.detail || '上传失败');
+    musicSelection = value.key; await loadMusic(); $('music-select').value = musicSelection;
+    $('music-file').value = ''; saveDraft(); toast('音乐已上传并选中');
+  } catch (error) { $('music-status').textContent = error.message || '上传失败，请重试'; }
+  finally { $('music-upload').disabled = Boolean(selected); }
+};
 $('new-job').onclick = () => { newDraft(); closeMobileHistory(); $('editor').focus(); };
 $('mobile-new-job').onclick = $('new-job').onclick;
 $('reuse').onclick = () => { const spec = selected?.spec; if (spec) { newDraft(spec); $('editor').focus(); toast('已沿用文案，修改后可制作新视频。'); } };
@@ -321,7 +365,7 @@ async function boot() {
     if (!session.authenticated) { showLogin(); return; }
     authenticated = true; $('login-view').hidden = true; $('loading-view').hidden = true; $('app').hidden = false; $('logout').hidden = !session.login_required;
     const jobId = new URLSearchParams(location.search).get('job');
-    newDraft(); await refreshHistory(); if (jobId) await selectJob(jobId); checkConnection();
+    newDraft(); await Promise.all([refreshHistory(), loadMusic()]); if (jobId) await selectJob(jobId); checkConnection();
   } catch (error) { $('loading-view').querySelector('p').textContent = error.message; $('reload-app').hidden = false; }
 }
 $('reload-app').onclick = boot;

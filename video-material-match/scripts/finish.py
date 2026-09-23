@@ -49,7 +49,7 @@ def allocate_shots(options, seconds, fps):
     return None
 
 
-def prepare_shots(plan, catalog, models, log=print, replace=()):
+def prepare_shots(plan, catalog, models, log=print, replace=(), checkpoint=None):
     database, search = None, None
     try:
         for index, scene in enumerate(plan['scenes'], 1):
@@ -69,7 +69,8 @@ def prepare_shots(plan, catalog, models, log=print, replace=()):
                 log(f'场景 {index} 补充动态素材，覆盖 {length:.2f} 秒配音')
                 query = scene.get('query') or scene['text']
                 # Retrieve once; each review sees a fresh group of three candidates.
-                recalled = search(models.embed(text=query), 60)
+                query_vector = models.embed(text=query)
+                recalled = search(query_vector, 60)
                 ranked = models.rerank(query, [c for c in recalled if c['id'] not in rejected])
                 for start in range(0, min(len(ranked), 9), 3):
                     candidates = ranked[start:start+3]
@@ -93,9 +94,43 @@ def prepare_shots(plan, catalog, models, log=print, replace=()):
                     if shots:
                         break
             if not shots:
-                raise ValueError(f'场景 {index} 缺少足够的合格动态素材，请修订该段文案或补素材后重新配音；禁止长定格补时')
+                # Keep the verified clips first, then use dynamic indexed footage as b-roll.
+                # Semantic mismatch is preferable to a failed, fully voiced task.
+                pool = search(query_vector, 100000)
+                used = {c['id'] for c in options}
+                fallback = [c for c in [*ranked, *pool] if c['id'] not in used and c['id'] not in rejected]
+                if sum(c['source_end']-c['source_start'] for c in fallback) < length:
+                    fallback += [c for c in pool if c['id'] not in used and c['id'] in rejected]
+                seen = set()
+                for clip in fallback:
+                    if clip['id'] in seen:
+                        continue
+                    seen.add(clip['id'])
+                    duration = clip['source_end']-clip['source_start']
+                    if duration > 0:
+                        options.append({**clip, 'verified_start': 0, 'verified_end': duration,
+                                        'visual_score': 0, 'fallback': True})
+                    shots = allocate_shots(options, length, plan['fps'])
+                    if shots:
+                        break
+                if not shots and options:
+                    # A tiny library may need repeated moving footage. Never extend a still frame.
+                    cycle = list(options)
+                    while not shots and len(options) < len(cycle) + math.ceil(length / max(.04, sum(
+                            c['verified_end']-c['verified_start'] for c in cycle))) * len(cycle):
+                        options.extend(cycle)
+                        shots = allocate_shots(options, length, plan['fps'])
+                if shots:
+                    scene['visual_usage'] = 'fallback-b-roll'
+                    log(f'场景 {index} 使用动态补充镜头覆盖完整配音；原始语义匹配不足')
+                else:
+                    raise ValueError('素材库没有可解码的动态视频片段，请检查源文件和索引')
+            elif index in replace and scene.get('visual_usage') == 'fallback-b-roll':
+                scene.pop('visual_usage')
             scene['shots'] = shots
             scene['match']['selected'] = shots[0]['selected']
+            if checkpoint:
+                write_json(checkpoint, plan)
     finally:
         if database:
             database.close()
@@ -106,7 +141,7 @@ def deliver(plan, output, width=1920, height=1080, catalog='data/catalog', music
     output.mkdir(parents=True, exist_ok=True)
     plan['output_color'] = 'bt709'
     models = Models()
-    prepare_shots(plan, catalog, models, log)
+    prepare_shots(plan, catalog, models, log, checkpoint=output/'plan.json')
     write_json(output/'plan.json', plan)
     if plan.get('narration'):
         saved_music = plan.get('music_settings', {}).get('path')
@@ -144,5 +179,5 @@ def deliver(plan, output, width=1920, height=1080, catalog='data/catalog', music
         if attempt == 2 or not replace:
             break
         log('检查发现画面问题，重新选择相关场景素材后复查')
-        prepare_shots(plan, catalog, models, log, replace)
+        prepare_shots(plan, catalog, models, log, replace, checkpoint=output/'plan.json')
     raise ValueError('成片检查未通过。查看 quality-report.json，修正后重新 render；当前文件是待修订版本，不能标为完成')

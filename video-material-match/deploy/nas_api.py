@@ -74,6 +74,39 @@ class Jobs:
         result.pop('spec')
         return result
 
+    def checkpoint(self, job_id):
+        folder = self.root / 'outputs' / job_id
+        plan_path = folder / 'plan.json'
+        if not plan_path.is_file():
+            return '任务提交'
+        try:
+            plan = json.loads(plan_path.read_text(encoding='utf-8'))
+            scenes = plan.get('scenes', [])
+            if not scenes or any('match' not in scene for scene in scenes):
+                return '素材匹配'
+            if not (folder / 'narration.wav').is_file():
+                return '配音与剪辑'
+            if any(not scene.get('shots') for scene in scenes):
+                return '动态镜头补齐'
+            if not (folder / 'video-music.mp4').is_file():
+                return '视频导出'
+            return '成片检查'
+        except (OSError, ValueError, TypeError):
+            return '素材匹配'
+
+    def resume(self, job_id):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT state FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, '任务不存在')
+            if row['state'] not in ('failed', 'interrupted'):
+                raise HTTPException(409, '仅失败或中断的任务可以续作')
+            db.execute("UPDATE jobs SET state='queued',error=NULL,updated=? WHERE id=?",
+                       (time.time(), job_id))
+        self.log(job_id, '从已保存的「' + self.checkpoint(job_id) + '」状态继续制作')
+        return self.get(job_id)
+
     def log(self, job_id, message):
         message = clean_error(message)
         with self.connect() as db:
@@ -137,7 +170,7 @@ class Jobs:
             row = db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY created LIMIT 1").fetchone()
             if not row:
                 return False
-            db.execute("UPDATE jobs SET state='running',updated=? WHERE id=?", (time.time(), row['id']))
+            db.execute("UPDATE jobs SET state='running',error=NULL,updated=? WHERE id=?", (time.time(), row['id']))
         job_id = row['id']
         folder = self.root / 'outputs' / job_id
         folder.mkdir(parents=True, exist_ok=True)
@@ -150,7 +183,7 @@ class Jobs:
             if not report.get('passed') or report.get('sha256') != digest:
                 raise ValueError('实际成片尚未通过检查或检查报告与成片不一致')
             with self.connect() as db:
-                db.execute("UPDATE jobs SET state='done',result=?,updated=? WHERE id=?",
+                db.execute("UPDATE jobs SET state='done',result=?,error=NULL,updated=? WHERE id=?",
                            (result.name, time.time(), job_id))
         except Exception as exc:
             error = clean_error(exc)
@@ -161,7 +194,7 @@ class Jobs:
 
 
 def generate(spec, folder, log):
-    from matcher import create_plan
+    from matcher import create_plan, resume_plan
     from voice import synthesize_plan
     from finish import deliver
     catalog = os.environ.get('CATALOG_DIR', '/data/catalog')
@@ -170,8 +203,25 @@ def generate(spec, folder, log):
         spec['text'], catalog, folder, log=log)
     if plan['script'] != spec['text']:
         raise ValueError('保存的计划与任务文案不一致，不能复用已付费任务')
-    synthesize_plan(plan, folder, spec['emotion_alpha'], log=log)
-    return deliver(plan, folder, spec['width'], spec['height'], catalog=catalog, log=log)
+    resume_plan(plan, catalog, folder, log=log)
+    voiced = plan.get('voice_settings', {}).get('emotion_alpha') == spec['emotion_alpha']
+    voiced = voiced and (folder / 'narration.wav').is_file() and all(
+        scene.get('voice') and Path(scene['voice']).is_file() for scene in plan['scenes'])
+    if voiced:
+        log('复用已完成配音与时间轴')
+    else:
+        synthesize_plan(plan, folder, spec['emotion_alpha'], log=log)
+    music_file = None
+    if spec.get('music_key'):
+        from cos_music import download
+        from matcher import write_json
+        music_file = download(spec['music_key'], folder)
+        plan['music_settings'] = {'provider': 'tencent-cos', 'key': spec['music_key'],
+                                  'path': str(music_file)}
+        write_json(saved, plan)
+        log('已读取音乐库曲目，混音时按视频时长裁切')
+    return deliver(plan, folder, spec['width'], spec['height'], catalog=catalog,
+                   music_file=music_file, log=log)
 
 
 def render_edit(spec, folder, log):
@@ -251,17 +301,27 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
             if type(width) is not int or type(height) is not int or (width, height) not in (
                     (1080, 1920), (1920, 1080), (720, 1280), (1280, 720)):
                 raise ValueError('仅支持 720p/1080p 横屏或竖屏')
+            from cos_music import validate_key
+            music_key = validate_key(body.get('music_key'))
         except (ValueError, TypeError, AttributeError) as exc:
             raise HTTPException(400, clean_error(exc)) from None
-        job_id = jobs.submit(key, {'text': text, 'emotion_alpha': alpha, 'width': width, 'height': height})
+        job_id = jobs.submit(key, {'text': text, 'emotion_alpha': alpha, 'width': width,
+                                   'height': height, 'music_key': music_key})
         return {'id': job_id, 'state': jobs.get(job_id)['state'], 'status_url': f'/v1/jobs/{job_id}'}
 
     @app.get('/v1/jobs/{job_id}', dependencies=[Depends(authorize)])
     def status(job_id: str):
         result = jobs.get(job_id)
+        result['checkpoint'] = jobs.checkpoint(job_id)
         if result['state'] == 'done':
             result['video_url'] = f'/v1/jobs/{job_id}/video'
             result['report_url'] = f'/v1/jobs/{job_id}/report'
+        return result
+
+    @app.post('/v1/jobs/{job_id}/resume', status_code=202, dependencies=[Depends(authorize)])
+    def resume(job_id: str):
+        result = jobs.resume(job_id)
+        result['checkpoint'] = jobs.checkpoint(job_id)
         return result
 
     @app.get('/v1/jobs/{job_id}/edit', dependencies=[Depends(authorize)])

@@ -23,6 +23,24 @@ class FinishTests(unittest.TestCase):
         self.assertTrue(all(s['duration'] <= s['selected']['verified_end'] for s in shots))
         self.assertIsNone(finish.allocate_shots(clips[:1],3.36,25))
 
+    def test_scene_uses_moving_filler_when_no_clip_matches_semantically(self):
+        from unittest.mock import Mock
+        clips = [{'id': i, 'source_start': 0, 'source_end': 5, 'path': f'{i}.mp4'} for i in range(3)]
+        catalog = Mock()
+        catalog.searcher.return_value = lambda _vector, _count: clips
+        models = Mock()
+        models.rerank.return_value = clips
+        plan = {'fps': 25, 'scenes': [{'text': '园区步道', 'query': '园区步道',
+                                     'start': 0, 'end': 12,
+                                     'match': {'selected': None, 'attempts': []}}]}
+        with patch('finish.matching_catalog', return_value=catalog), \
+             patch('finish.judge_videos', return_value={'accepted': []}):
+            finish.prepare_shots(plan, 'catalog', models, log=lambda _: None)
+        scene = plan['scenes'][0]
+        self.assertEqual(scene['visual_usage'], 'fallback-b-roll')
+        self.assertAlmostEqual(sum(shot['duration'] for shot in scene['shots']), 12)
+        self.assertTrue(all(shot['selected']['verified_end'] >= shot['duration'] for shot in scene['shots']))
+
     def test_error_overrides_model_pass_and_review_must_cover_end(self):
         result = {'passed':True,'audio_present':True,'watched_until':8,
                   'issues':[{'type':'audio_cutoff','severity':'error','problem':'Last word cut'}]}
@@ -52,7 +70,7 @@ class FinishTests(unittest.TestCase):
             root=Path(tmp); voice=root/'speech.wav'; bgm=root/'music.wav'; video=root/'video.mp4'
             for target,frequency in ((voice,600),(bgm,200)):
                 media.run(['ffmpeg','-v','error','-f','lavfi','-i',f'sine=frequency={frequency}:sample_rate=48000',
-                           '-t','2','-c:a','pcm_s16le',str(target)])
+                           '-t',str(2 if target == voice else 1),'-c:a','pcm_s16le',str(target)])
             media.run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=s=64x64:r=25',
                        '-t','2','-c:v','libx264',str(video)])
             result=music.mix(video,voice,bgm,root,2)

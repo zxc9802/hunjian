@@ -20,6 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from . import music_library
+
 ROOT = Path(__file__).resolve().parent
 ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'report': ('json', 'application/json'),
              'captions': ('srt', 'application/x-subrip'), 'plan': ('json', 'application/json'),
@@ -153,7 +155,12 @@ def validate_spec(data):
     width, height = data.get('width', 1080), data.get('height', 1920)
     if type(width) is not int or type(height) is not int or (width, height) not in ((1080, 1920), (1920, 1080), (720, 1280), (1280, 720)):
         raise HTTPException(400, '请选择 720p 或 1080p 横屏/竖屏')
-    return {'text': text.strip(), 'emotion_alpha': alpha, 'width': width, 'height': height}
+    try:
+        music_key = music_library.validate_key(data.get('music_key'))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {'text': text.strip(), 'emotion_alpha': alpha, 'width': width,
+            'height': height, 'music_key': music_key}
 
 
 def create_app(settings=None, nas=None):
@@ -180,6 +187,7 @@ def create_app(settings=None, nas=None):
     def sanitized_snapshot(value):
         return {'state': value['state'], 'logs': [clean(x) for x in value.get('logs', [])][-100:],
                 'error': clean(value['error']) if value.get('error') else None,
+                'checkpoint': value.get('checkpoint'),
                 'created': value.get('created'), 'updated': value.get('updated')}
 
     @app.middleware('http')
@@ -316,6 +324,47 @@ def create_app(settings=None, nas=None):
     def list_jobs():
         return {'jobs': store.list()}
 
+    @app.get('/api/music', dependencies=[Depends(authorize)])
+    def list_music():
+        try:
+            return {'tracks': music_library.list_tracks()}
+        except Exception:
+            raise HTTPException(503, '音乐库暂时无法连接，请检查腾讯 COS 环境变量和存储桶权限') from None
+
+    @app.put('/api/music', dependencies=[Depends(authorize)], status_code=201)
+    async def upload_music(request: Request):
+        try:
+            key = music_library.new_key(request.headers.get('x-music-name', ''))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        temporary = settings.data_dir / ('.music-' + secrets.token_hex(16) + '.upload')
+        size = 0
+        try:
+            with temporary.open('xb') as target:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > 100 * 1024 * 1024:
+                        raise HTTPException(413, '音乐文件不能超过 100 MB')
+                    target.write(chunk)
+            if size < 128:
+                raise HTTPException(400, '音乐文件为空或过短')
+            with temporary.open('rb') as source:
+                header = source.read(16)
+            suffix = Path(key).suffix.lower()
+            valid = (suffix == '.mp3' and (header.startswith(b'ID3') or
+                     header[:1] == b'\xff' and header[1] & 0xe0 == 0xe0)) or \
+                    (suffix == '.wav' and header.startswith(b'RIFF') and header[8:12] == b'WAVE') or \
+                    (suffix == '.m4a' and header[4:8] == b'ftyp')
+            if not valid:
+                raise HTTPException(400, '文件内容与音乐格式不符')
+            try:
+                await run_in_threadpool(music_library.upload, temporary, key)
+            except Exception:
+                raise HTTPException(503, '音乐上传到腾讯 COS 失败，请检查存储桶配置') from None
+            return {'key': key, 'name': key.rsplit('/', 1)[-1], 'size': size}
+        finally:
+            temporary.unlink(missing_ok=True)
+
     @app.post('/api/jobs', dependencies=[Depends(authorize)], status_code=202)
     async def submit(request: Request):
         data = await read_json(request)
@@ -329,10 +378,26 @@ def create_app(settings=None, nas=None):
     def reconcile(job_id: str):
         return forward(store.get(job_id))
 
+    @app.post('/api/jobs/{job_id}/resume', dependencies=[Depends(authorize)], status_code=202)
+    def resume_job(job_id: str):
+        job = store.get(job_id)
+        if job['state'] not in ('failed', 'interrupted') or not job['nas_id']:
+            raise HTTPException(409, '仅已失败或中断的 NAS 任务可以续作')
+        try:
+            with nas.request('POST', '/v1/jobs/' + job['nas_id'] + '/resume') as response:
+                if response.status_code == 202:
+                    value = response.json()
+                    return store.update(job_id, value['state'], snapshot=sanitized_snapshot(value))
+                if response.status_code in (404, 409):
+                    raise HTTPException(response.status_code, 'NAS 任务状态已变化，请刷新后重试')
+                raise HTTPException(502, 'NAS 暂时无法续作该任务')
+        except (requests.RequestException, ValueError):
+            raise HTTPException(503, '续作请求状态不确定，请刷新任务检查，避免重复点击') from None
+
     @app.get('/api/jobs/{job_id}', dependencies=[Depends(authorize)])
     def job_status(job_id: str):
         job = store.get(job_id)
-        if job['nas_id'] and (job['state'] not in TERMINAL or not job['snapshot']):
+        if job['nas_id'] and (job['state'] != 'done' or not job['snapshot']):
             value = read_nas('/v1/jobs/' + job['nas_id'])
             if value.get('state') not in {'queued', 'running', *TERMINAL}:
                 raise HTTPException(502, 'NAS 返回了未知任务状态')

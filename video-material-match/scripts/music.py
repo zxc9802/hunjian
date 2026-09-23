@@ -109,7 +109,10 @@ def normalize(source, target, seconds, lufs):
 def mix(video, narration, music, output, seconds):
     output = Path(output)
     if media.duration(music) < seconds:
-        raise ValueError('音乐短于成片，需要生成更长配乐或剪辑衔接，不能静音补足')
+        repeated = output / 'music-loop.wav'
+        media.run(['ffmpeg', '-v', 'error', '-y', '-stream_loop', '-1', '-i', str(music),
+                   '-t', str(seconds), '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', str(repeated)])
+        music = repeated
     normalize(narration, output/'narration-normalized.wav', seconds, VOICE_LUFS)
     normalize(music, output/'music-bed.wav', seconds, MUSIC_LUFS)
     filters = (f'[0:a]asplit=2[voice][side];[1:a]afade=t=in:d=1.2,'

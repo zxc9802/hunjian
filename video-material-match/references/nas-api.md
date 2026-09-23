@@ -27,7 +27,7 @@
 
 国内 NAS 使用 302 官方国内入口 `api.302ai.cn`。Compose 中的 `RERANK_URL`、`TTS_BASE_URL` 和 `TTS_UPLOAD_FALLBACK_URL` 分别配置重排、配音及参考音频备用上传地址；模型和已有密钥不变。国内任务仍可能返回 `file.302.ai` 的音频链接，使用国内入口时只将这一官方 CDN 主机名映射到已验证的 `file.302ai.cn`，保留原路径、查询参数和 TLS 验证，不向下载主机发送 API 密钥。不能把电脑上的代理地址作为 NAS 长期运行的依赖。302 官方域名说明见 [302 iOS 使用说明](https://help.302.ai/docs/iOS-APP)。
 
-`private/runtime.env` 由管理员保管，含 `OPENLUX_API_KEY`、`RERANK_API_KEY`、`SUNO_API_KEY`、随机 `MIXER_API_TOKEN`。实际凭据不放入技能包、镜像、报告或客户端网页。Docker 构建上下文只指向 `app/`，不包含私有凭据目录。
+`private/runtime.env` 由管理员保管，含 `OPENLUX_API_KEY`、`RERANK_API_KEY`、`SUNO_API_KEY`、随机 `MIXER_API_TOKEN`。启用用户音乐库时，还需在此添加 `COS_SECRET_ID`、`COS_SECRET_KEY`。实际凭据不放入技能包、镜像、报告或客户端网页。Docker 构建上下文只指向 `app/`，不包含私有凭据目录。
 
 启动首先用 `deploy/migrate_catalog.py` 将 Windows 素材路径映射到 `/media`，校验文件大小、修改时间和代理文件，保留原有向量数据并建立 FAISS。跨 SMB 时间精度仅容忍 100 纳秒差异，发现文件变化即停止。`data/catalog/migration-report.json` 记录向量数、维度、向量内容校验和及重新计算数。
 
@@ -35,8 +35,9 @@
 
 除 `GET /health` 外均要求 `Authorization: Bearer <MIXER_API_TOKEN>`。没有跨站 CORS，也不接受浏览器跨站直接调用；应由智能体后台保管密钥。
 
-- `POST /v1/jobs`：JSON 含 `text`、`emotion_alpha`（默认 0.8）、`width`/`height`（默认 1080/1920）。必须附 `Idempotency-Key`，8–128 位英文、数字、点、下划线或短横线。同一 ID 与相同参数重复提交返回原任务，不重新下单；不同参数返回 409。
-- `GET /v1/jobs/{id}`：`queued`、`running`、`done`、`failed` 或 `interrupted`，包含阶段日志。成功才返回成片和报告地址。
+- `POST /v1/jobs`：JSON 含 `text`、`emotion_alpha`（默认 0.8）、`width`/`height`（默认 1080/1920），可选 `music_key`（工作台上传的 COS 曲目）。必须附 `Idempotency-Key`，8–128 位英文、数字、点、下划线或短横线。同一 ID 与相同参数重复提交返回原任务，不重新下单；不同参数返回 409。
+- `GET /v1/jobs/{id}`：`queued`、`running`、`done`、`failed` 或 `interrupted`，包含阶段日志和已保存的 `checkpoint`。成功才返回成片和报告地址。
+- `POST /v1/jobs/{id}/resume`：失败或中断后，用同一任务 ID 和输出目录重新入队；完成的场景匹配、配音及音乐文件复用。运行中或已完成的任务返回 409。
 - `GET /v1/jobs/{id}/video`：通过 Gemini 检查的成片，支持 Range 下载。
 - `GET /v1/jobs/{id}/report`：与实际视频 SHA256 绑定的检查报告。
 - `GET /v1/jobs/{id}/captions`：按实际配音时间轴生成的字幕。
@@ -61,7 +62,7 @@
 
 ## 恢复与验收
 
-SQLite 保留队列与日志。服务重启后，尚未开始的任务继续排队；运行中的任务标为 `interrupted`，保留 `data/outputs/{id}` 的模型任务记录，不自动重发可能已计费的请求。此版本尚无自动恢复中途渲染的 API，需核对已有供应商 task_id 和产物后人工恢复。恢复原任务时保留同一任务 ID 和输出目录，复用保存的计划、配音及音乐记录；保存计划的原文必须与任务文案相同，避免重新分段造成重复配音计费。只有已排除提交结果不确定的任务才可由管理员重新入队。
+SQLite 保留队列与日志。服务重启后，尚未开始的任务继续排队；运行中的任务标为 `interrupted`，保留 `data/outputs/{id}` 的模型任务记录，不自动重发可能已计费的请求。管理员排除错误后通过工作台“从保存进度继续”或 `POST /resume` 续作。恢复原任务时保留同一任务 ID 和输出目录，复用保存的计划、配音及音乐记录；保存计划的原文必须与任务文案相同，避免重新分段造成重复配音计费。语义合格镜头不足时，使用索引中的其他动态片段补足并在计划中标记，不再仅因相关素材不足而失败。成片的黑屏、定格、时长、声音等检查仍然有效。
 
 验收必须包括 NAS 实际读源文件、完成文字检索、指定音色配音、纯音乐混音、FFprobe/Gemini 检查及下载核验。仅 Docker 安装成功、接口返回 200 或本地单元测试通过，不能说 NAS 已完成部署。
 

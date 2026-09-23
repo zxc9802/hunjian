@@ -24,8 +24,12 @@ Zeabur 官方说明：[Dockerfile 部署](https://zeabur.com/docs/en-US/deploy/m
 | `NAS_TOKEN` | 现有 NAS 的 `MIXER_API_TOKEN`，原样使用 |
 | `WORKBENCH_PASSWORD` | 自行设置的工作台登录密码，至少 12 位 |
 | `WORKBENCH_DATA` | `/data`（镜像默认值） |
+| `COS_SECRET_ID` | 腾讯 COS 访问密钥 ID，仅存在 Zeabur 服务环境变量中 |
+| `COS_SECRET_KEY` | 腾讯 COS 访问密钥 Key，仅存在 Zeabur 服务环境变量中 |
 
 `WORKBENCH_DOMAIN` 只供 Compose 中的 Caddy 使用；Zeabur 模式应直接设置 `PUBLIC_URL`。缺少有效的 NAS 配置或登录配置时程序会拒绝启动，不能通过删除校验来绕过。
+
+工作台音乐库使用私有桶 `hunjian-1410143389`、新加坡地域 `ap-singapore`。用户登录后上传 MP3、WAV 或 M4A（单文件上限 100 MB），页面列出已上传曲目并在创建任务时选择。NAS 的 `private/runtime.env` 也必须设置相同的两个 `COS_SECRET_*` 变量，才能按任务曲目从 COS 下载；不选曲时仍使用现有自动配乐。请给这组密钥仅授予该桶音乐库前缀所需的列出、上传与下载权限。工作台和 NAS 环境变量修改后均需重启或重新部署服务。
 
 ## 任务数据与 NAS 连接
 

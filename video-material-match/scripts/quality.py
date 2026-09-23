@@ -83,7 +83,8 @@ def review(video, plan, output, models=None, log=print):
                    '-t', str(length), '-vf', 'scale=720:720:force_original_aspect_ratio=decrease:force_divisible_by=2,fps=8',
                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '28', '-c:a', 'aac', '-b:a', '96k', str(proxy)])
         scenes = [{'scene': i+1, 'start': s['start'], 'end': s['end'], 'text': s['text'],
-                   'contextual_b_roll': s.get('visual_note')} for i, s in enumerate(plan['scenes'])
+                   'contextual_b_roll': s.get('visual_note'), 'visual_usage': s.get('visual_usage')}
+                  for i, s in enumerate(plan['scenes'])
                   if s['end'] > start and s['start'] < start+length]
         prompt = (
             '你是成片质检员，必须观看所附真实视频并听其音轨，不能仅根据文案或时间表推测。'
@@ -96,6 +97,8 @@ def review(video, plan, output, models=None, log=print):
                if plan.get('cover_seconds') == .5 else '') +
             '非对口型的混剪不要求人物口型同步；字幕为整句场景级，不要求逐字跳动。'
             '用户已允许记录中的环境空镜，不能要求这些画面证明其没有展示的具体动作。'
+            '标记 fallback-b-roll 的场景允许相关或普通动态补充画面；仅因画面与文案不对应不能判定制作失败，'
+            '动态素材因库存有限重复使用也可接受，但黑屏、真正的定格、色彩、字幕与声音问题仍需照常报告。'
             '禁止出现“相关画面示意”叠字。环境替代信息仅留在制作报告。'
             '只把明确可见/可听的问题列为 error；不确定的列 warning，不编造缺陷。'
             '所附为连续审核段；中间段在边界截断是审核分段，不是成片故障。'
@@ -113,6 +116,14 @@ def review(video, plan, output, models=None, log=print):
         log(f'Gemini 3.7 Flash 检查成片：{start:.0f}–{start+length:.2f} 秒（含声音）')
         result = validate_review(models.json(prompt, [('final-cut', proxy)]), length, bool(plan.get('narration')),
                                  bool(plan.get('music_settings', {}).get('path')))
+        fallback_scenes = {s['scene'] for s in scenes if s['visual_usage'] == 'fallback-b-roll'}
+        downgraded = False
+        for issue in result['issues']:
+            if issue.get('type') == 'visual_mismatch' and issue.get('scene') in fallback_scenes:
+                issue['severity'] = 'warning'
+                downgraded = True
+        if downgraded and not any(i['severity'] == 'error' for i in result['issues']):
+            result['passed'] = True
         results.append({'start': start, 'duration': length, **result})
         write_json(folder / f'result-{index+1:03}.json', results[-1])
     report = {'model': 'gemini-3.7-flash', 'video': str(Path(video).resolve()),

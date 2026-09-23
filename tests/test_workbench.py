@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import requests
 from fastapi.testclient import TestClient
@@ -41,6 +42,11 @@ class FakeNas:
             response.status_code = 202
         elif path.endswith('/edit-status'):
             value = {'state': 'done', 'result': 'edit-test.mp4'}
+        elif path.endswith('/resume') and method == 'POST':
+            self.state = 'queued'
+            value = {'id': 'a' * 32, 'state': 'queued', 'logs': ['从保存进度继续'],
+                     'error': None, 'checkpoint': '动态镜头补齐'}
+            response.status_code = 202
         elif '/covers/' in path:
             response.headers['Content-Type'] = 'image/jpeg'
             response._content = b'\xff\xd8\xff\xd9'
@@ -104,6 +110,27 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/jobs',json=self.spec,headers={**self.headers,'Origin':'https://other.example'}).status_code,403)
         self.assertEqual(self.client.get('/api/jobs',headers={'Host':'evil.example'}).status_code,400)
         self.assertEqual(len(self.nas.calls),0)
+
+    def test_music_upload_selection_and_failed_job_resume(self):
+        key = 'music-library/' + 'a' * 32 + '/海边.mp3'
+        self.assertEqual(self.submit(music_key='../private').status_code, 400)
+        with patch('workbench.music_library.upload') as upload, \
+             patch('workbench.music_library.list_tracks', return_value=[{'key':key,'name':'海边.mp3','size':256}]):
+            self.assertEqual(self.client.get('/api/music').json()['tracks'][0]['key'], key)
+            sent = self.client.put('/api/music', content=b'ID3' + b'0' * 253,
+                headers={**self.headers, 'X-Music-Name': '%E6%B5%B7%E8%BE%B9.mp3',
+                         'Content-Type': 'application/octet-stream'})
+            self.assertEqual(sent.status_code, 201)
+            self.assertIn('/海边.mp3', sent.json()['key'])
+            upload.assert_called_once()
+        job = self.submit(music_key=key).json()
+        self.assertEqual(job['spec']['music_key'], key)
+        self.nas.state = 'failed'
+        self.assertEqual(self.client.get('/api/jobs/test-request-001').json()['state'], 'failed')
+        resumed = self.client.post('/api/jobs/test-request-001/resume', headers=self.headers)
+        self.assertEqual(resumed.status_code, 202)
+        self.assertEqual(resumed.json()['state'], 'queued')
+        self.assertEqual(resumed.json()['snapshot']['checkpoint'], '动态镜头补齐')
 
     def test_lost_submission_recovers_with_same_key_even_after_gateway_restart(self):
         self.nas.drop_reply = True

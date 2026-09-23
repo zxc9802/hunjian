@@ -53,6 +53,15 @@ class NasTests(unittest.TestCase):
         recovered = Jobs(self.root)
         self.assertEqual(recovered.get(job_id)['state'], 'interrupted')
         self.assertFalse(recovered.run_one(lambda *_: self.fail('重复下单')))
+        saved = self.root / 'outputs' / job_id / 'voice-001.wav'
+        saved.parent.mkdir(parents=True)
+        saved.write_bytes(b'paid-voice')
+        response = self.client.post(f'/v1/jobs/{job_id}/resume', headers=self.headers)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()['id'], job_id)
+        self.assertEqual(response.json()['state'], 'queued')
+        self.assertEqual(saved.read_bytes(), b'paid-voice')
+        self.assertEqual(self.client.post(f'/v1/jobs/{job_id}/resume', headers=self.headers).status_code, 409)
 
     def test_only_reviewed_actual_artifact_delivered(self):
         job_id = self.submit().json()['id']
@@ -141,7 +150,7 @@ class NasTests(unittest.TestCase):
         self.assertEqual(self.app.state.jobs.get(job_id)['state'], 'failed')
 
     def test_operator_resume_reuses_saved_plan_and_paid_voice_cache(self):
-        plan={'script':'原文案', 'scenes':[{'text':'原分段'}]}
+        plan={'script':'原文案', 'scenes':[{'text':'原分段', 'match':{'selected':None}}]}
         (self.root/'plan.json').write_text(json.dumps(plan),encoding='utf-8')
         spec={'text':'原文案','emotion_alpha':.8,'width':1080,'height':1920}
         with patch('matcher.create_plan') as create, patch('voice.synthesize_plan') as synth, \

@@ -276,10 +276,32 @@ def create_plan(text, folder, output, chunk_seconds=8, seed=None, log=print):
         scenes = estimate_timeline(split_text(models, text))
         seed = random.SystemRandom().randrange(2**32) if seed is None else seed
         plan = {'schema': 1, 'script': text, 'timing': 'estimated', 'fps': 25, 'seed': seed, 'scenes': scenes}
+        write_json(Path(output) / 'plan.json', plan)
         for i, scene in enumerate(scenes):
             log(f'匹配 {i+1}/{len(scenes)}: {scene["query"]}')
             scene['match'] = choose_match(scene['query'], lambda q,k: search(models.embed(text=q),k),
                 models.rerank, lambda q,c: judge_videos(models,q,c), seed=seed+i, visual_text=scene['text'])
+            write_json(Path(output) / 'plan.json', plan)
+        return plan
+    finally:
+        catalog.close()
+
+
+def resume_plan(plan, folder, output, log=print):
+    """Finish only scene matches absent from a saved plan."""
+    if all('match' in scene for scene in plan['scenes']):
+        return plan
+    models = Models()
+    catalog = matching_catalog(folder, models)
+    try:
+        search = catalog.searcher()
+        for i, scene in enumerate(plan['scenes']):
+            if 'match' in scene:
+                continue
+            log(f'继续匹配 {i+1}/{len(plan["scenes"])}: {scene["query"]}')
+            scene['match'] = choose_match(scene['query'], lambda q,k: search(models.embed(text=q),k),
+                models.rerank, lambda q,c: judge_videos(models,q,c),
+                seed=plan['seed']+i, visual_text=scene['text'])
             write_json(Path(output) / 'plan.json', plan)
         return plan
     finally:
