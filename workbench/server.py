@@ -334,6 +334,48 @@ def create_app(settings=None, nas=None):
                           bool(os.environ.get('COS_SECRET_ID')), bool(os.environ.get('COS_SECRET_KEY')))
             raise HTTPException(503, '音乐库暂时无法连接，请检查腾讯 COS 环境变量和存储桶权限') from None
 
+    @app.get('/api/music/preview', dependencies=[Depends(authorize)])
+    def preview_music(request: Request, key: str = ''):
+        from qcloud_cos.cos_exception import CosServiceError
+        try:
+            key = music_library.validate_key(key)
+            if not key:
+                raise ValueError('请选择要试听的音乐')
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        options = {}
+        requested = request.headers.get('range')
+        if requested:
+            match = re.fullmatch(r'bytes=(\d*)-(\d*)', requested)
+            if not match or not any(match.groups()) or (
+                    match[1] and match[2] and int(match[1]) > int(match[2])) or (
+                    not match[1] and int(match[2]) == 0):
+                raise HTTPException(416, '无效字节范围')
+            options['Range'] = requested
+        try:
+            upstream = music_library.client().get_object(Bucket=music_library.BUCKET, Key=key, **options)
+        except CosServiceError as exc:
+            status = exc.get_status_code()
+            if status in (404, 416):
+                raise HTTPException(status, '音乐不存在' if status == 404 else '无效字节范围') from None
+            raise HTTPException(503, '音乐暂时无法试听，请稍后重试') from None
+        except Exception:
+            raise HTTPException(503, '音乐暂时无法试听，请稍后重试') from None
+        metadata = requests.structures.CaseInsensitiveDict(upstream)
+        headers = {name: metadata[name] for name in ('Content-Length', 'Content-Range') if name in metadata}
+        headers['Accept-Ranges'] = 'bytes'
+        stream = upstream['Body'].get_raw_stream()
+
+        def chunks():
+            try:
+                while chunk := stream.read(128 * 1024):
+                    yield chunk
+            finally:
+                stream.close()
+        mime = {'.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4'}[Path(key).suffix.lower()]
+        return StreamingResponse(chunks(), status_code=206 if 'Content-Range' in headers else 200,
+                                 media_type=mime, headers=headers)
+
     @app.put('/api/music', dependencies=[Depends(authorize)], status_code=201)
     async def upload_music(request: Request):
         try:

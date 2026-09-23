@@ -15,7 +15,7 @@
 
 私网内的 HTTP 流量通过 Tailscale 加密连接传输，业务 API 仍要求 Bearer 密钥。智能体运行环境必须能够访问该私网；若程序部署在另一个容器中，需从那个容器再次检查连接。不要把宿主机的健康检查成功当成程序已完成接入。
 
-当前提供下文列出的完整混剪任务 API，尚无独立的原素材搜索、预览或片段下载接口；新增素材的自动增量索引也尚未配置。
+当前提供下文列出的完整混剪任务 API，尚无独立的原素材搜索、预览或片段下载接口。新版 NAS 服务会自动扫描已挂载素材目录并为新视频增量建索引。
 
 ## 部署内容
 
@@ -23,11 +23,13 @@
 
 `deploy/compose.yaml` 针对当前 NAS 配置：素材 `/volume1/海南康养素材库` 只读挂载为 `/media`；程序 UID/GID 为管理员界面显示的 `1026:10`；监听 NAS 局域网地址的 8780 端口；4 GB 内存、4 CPU 配额、单个后台工作线程，重启策略为 `unless-stopped`。迁移到其他 NAS 必须核实这些值。
 
+自动入库每 60 秒扫描 `/media`，仅处理新路径下的视频。文件状态连续 5 分钟未变化后，按现有 8 秒切片、1 FPS 代理、Gemini 向量和画面描述入库；已有片段跳过，失败在后续扫描从缺失片段续作。新增素材会产生模型费用。上传请使用新文件名；覆盖或删除已索引的源视频仍需管理员处理，不能视为新素材。索引状态和失败原因写入 `/data/catalog/catalog.sqlite3` 的 `auto_index_files` 表，过程也会输出到 NAS 容器日志。首次部署此版本需重新构建 NAS 镜像并重启服务，单纯重启旧容器不会获得新功能。
+
 绿联项目实际配置为项目目录内的 `docker-compose.yaml`。更新程序后在 Compose 配置中保留 `pull_policy: build` 再重新部署，确保执行更新后的 Dockerfile；普通容器重启不重新构建。Dockerfile 会为程序文件设置读取和目录遍历权限，随后以 `1026:10` 运行。镜像不包含服务密钥。
 
 国内 NAS 使用 302 官方国内入口 `api.302ai.cn`。Compose 中的 `RERANK_URL`、`TTS_BASE_URL` 和 `TTS_UPLOAD_FALLBACK_URL` 分别配置重排、配音及参考音频备用上传地址；模型和已有密钥不变。国内任务仍可能返回 `file.302.ai` 的音频链接，使用国内入口时只将这一官方 CDN 主机名映射到已验证的 `file.302ai.cn`，保留原路径、查询参数和 TLS 验证，不向下载主机发送 API 密钥。不能把电脑上的代理地址作为 NAS 长期运行的依赖。302 官方域名说明见 [302 iOS 使用说明](https://help.302.ai/docs/iOS-APP)。
 
-`private/runtime.env` 由管理员保管，含 `OPENLUX_API_KEY`、`RERANK_API_KEY`、`SUNO_API_KEY`、随机 `MIXER_API_TOKEN`。启用用户音乐库时，还需在此添加 `COS_SECRET_ID`、`COS_SECRET_KEY`。实际凭据不放入技能包、镜像、报告或客户端网页。Docker 构建上下文只指向 `app/`，不包含私有凭据目录。
+`private/runtime.env` 由管理员保管，含 `OPENLUX_API_KEY`、`RERANK_API_KEY`、随机 `MIXER_API_TOKEN`。启用用户音乐库时，还需在此添加 `COS_SECRET_ID`、`COS_SECRET_KEY`。背景音乐仅使用用户上传的曲目，不再需要音乐生成密钥。实际凭据不放入技能包、镜像、报告或客户端网页。Docker 构建上下文只指向 `app/`，不包含私有凭据目录。
 
 启动首先用 `deploy/migrate_catalog.py` 将 Windows 素材路径映射到 `/media`，校验文件大小、修改时间和代理文件，保留原有向量数据并建立 FAISS。跨 SMB 时间精度仅容忍 100 纳秒差异，发现文件变化即停止。`data/catalog/migration-report.json` 记录向量数、维度、向量内容校验和及重新计算数。
 
@@ -35,9 +37,9 @@
 
 除 `GET /health` 外均要求 `Authorization: Bearer <MIXER_API_TOKEN>`。没有跨站 CORS，也不接受浏览器跨站直接调用；应由智能体后台保管密钥。
 
-- `POST /v1/jobs`：JSON 含 `text`、`emotion_alpha`（默认 0.8）、`width`/`height`（默认 1080/1920），可选 `music_key`（工作台上传的 COS 曲目）。必须附 `Idempotency-Key`，8–128 位英文、数字、点、下划线或短横线。同一 ID 与相同参数重复提交返回原任务，不重新下单；不同参数返回 409。
+- `POST /v1/jobs`：JSON 含 `text`、`emotion_alpha`（默认 0.8）、`width`/`height`（默认 1080/1920），可选 `music_key`（工作台上传的 COS 曲目）；省略、空字符串或 null 表示仅口播、不添加背景音乐。必须附 `Idempotency-Key`，8–128 位英文、数字、点、下划线或短横线。同一 ID 与相同参数重复提交返回原任务，不重新下单；不同参数返回 409。
 - `GET /v1/jobs/{id}`：`queued`、`running`、`done`、`failed` 或 `interrupted`，包含阶段日志和已保存的 `checkpoint`。成功才返回成片和报告地址。
-- `POST /v1/jobs/{id}/resume`：失败或中断后，用同一任务 ID 和输出目录重新入队；完成的场景匹配、配音及音乐文件复用。运行中或已完成的任务返回 409。
+- `POST /v1/jobs/{id}/resume`：失败或中断后，用同一任务 ID 和输出目录重新入队；完成的场景匹配、配音及音乐文件复用。配音服务明确返回失败的段落会重新提交一次，成功后继续后续段落；再次失败则停下，等待下次续作。仍在处理的配音任务继续查询原任务；提交超时且没有任务 ID 时保留记录，先核对服务商结果。运行中或已完成的任务返回 409。
 - `GET /v1/jobs/{id}/video`：通过 Gemini 检查的成片，支持 Range 下载。
 - `GET /v1/jobs/{id}/report`：与实际视频 SHA256 绑定的检查报告。
 - `GET /v1/jobs/{id}/captions`：按实际配音时间轴生成的字幕。

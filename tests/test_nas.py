@@ -3,7 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +16,15 @@ from api import Models
 
 
 class NasTests(unittest.TestCase):
+    def test_startup_does_not_require_music_generation_credentials(self):
+        import runpy
+        environment = {'SOURCE_ROOT': 'Z:\\', 'OPENLUX_API_KEY': 'test',
+                       'RERANK_API_KEY': 'test', 'MIXER_API_TOKEN': 'x'*40}
+        with patch.dict('os.environ', environment, clear=True), \
+             patch('migrate_catalog.migrate'), patch('uvicorn.run') as run:
+            runpy.run_path(str(ROOT/'video-material-match'/'deploy'/'start.py'), run_name='__main__')
+            run.assert_called_once()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -62,6 +71,66 @@ class NasTests(unittest.TestCase):
         self.assertEqual(response.json()['state'], 'queued')
         self.assertEqual(saved.read_bytes(), b'paid-voice')
         self.assertEqual(self.client.post(f'/v1/jobs/{job_id}/resume', headers=self.headers).status_code, 409)
+
+    def test_narration_only_export_reaches_review_checkpoint(self):
+        job_id = self.submit().json()['id']
+        folder = self.root / 'outputs' / job_id
+        folder.mkdir(parents=True)
+        (folder/'plan.json').write_text(json.dumps({'scenes': [{'match': {}, 'shots': [{}]}]}))
+        (folder/'narration.wav').write_bytes(b'voice')
+        (folder/'video.mp4').write_bytes(b'video with narration')
+        self.assertEqual(self.app.state.jobs.checkpoint(job_id), '成片检查')
+
+    def test_resume_reuses_first_segment_retries_second_and_continues_third(self):
+        texts = ['第一段。', '第二段。', '第三段。']
+        job_id = self.submit(text=''.join(texts)).json()['id']
+        folder = self.root/'outputs'/job_id
+        folder.mkdir(parents=True)
+        plan = {'script': ''.join(texts), 'fps': 25,
+                'scenes': [{'text': text, 'match': {'selected': None}} for text in texts]}
+        (folder/'plan.json').write_text(json.dumps(plan), encoding='utf-8')
+
+        def created(task_id):
+            response = Mock(status_code=200)
+            response.json.return_value = {'task_id': task_id}
+            return response
+
+        success = Mock(status_code=200)
+        success.json.return_value = {'state': 'SUCCESS', 'audio_url': 'https://example.com/audio.wav'}
+        failed = Mock(status_code=200)
+        failed.json.return_value = {'state': 'FAILURE', 'error': {'message': 'temporary failure'}}
+        downloaded = Mock(status_code=200, content=b'paid-audio')
+
+        def delivered(*args, **kwargs):
+            result = folder/'video.mp4'
+            result.write_bytes(b'finished')
+            (folder/'quality-report.json').write_text(json.dumps({
+                'passed': True, 'sha256': hashlib.sha256(result.read_bytes()).hexdigest()}))
+            return result
+
+        with patch('matcher.resume_plan'), \
+             patch('voice.upload_reference', side_effect=lambda path, folder, kind: (f'https://example.com/{kind}.wav', kind+'-hash')), \
+             patch('voice.headers', return_value={}), \
+             patch('voice.requests.post', side_effect=[created('first'), created('second-failed'),
+                                                      created('second-retry'), created('third')]) as post, \
+             patch('voice.requests.get', side_effect=[success, downloaded, failed,
+                                                     success, downloaded, success, downloaded]), \
+             patch('voice.media.duration', return_value=1), patch('voice.media.run'), \
+             patch('finish.deliver', side_effect=delivered):
+            jobs = self.app.state.jobs
+            jobs.run_one(generate)
+            self.assertEqual(jobs.get(job_id)['state'], 'failed')
+            self.assertEqual(post.call_count, 2)
+            checkpoint = json.loads((folder/'plan.json').read_text(encoding='utf-8'))
+            self.assertEqual(checkpoint['scenes'][0]['voice_duration'], 1)
+            self.assertNotIn('voice', checkpoint['scenes'][1])
+            resumed = self.client.post(f'/v1/jobs/{job_id}/resume', headers=self.headers)
+            self.assertEqual(resumed.status_code, 202)
+            self.assertEqual(self.client.post(f'/v1/jobs/{job_id}/resume', headers=self.headers).status_code, 409)
+            jobs.run_one(generate)
+            self.assertEqual(jobs.get(job_id)['state'], 'done')
+            self.assertEqual([call.kwargs['json']['text'] for call in post.call_args_list],
+                             [texts[0], texts[1], texts[1], texts[2]])
 
     def test_only_reviewed_actual_artifact_delivered(self):
         job_id = self.submit().json()['id']

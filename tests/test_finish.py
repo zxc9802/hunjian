@@ -78,15 +78,36 @@ class FinishTests(unittest.TestCase):
             plan={'fps':25,'narration':str(voice),'scenes':[{'end':2,'match':{'selected':{'id':1}}}]}
             self.assertEqual(quality.inspect_media(result,plan)['issues'],[])
 
-    def test_uncertain_music_submission_is_not_resubmitted(self):
-        import requests
-        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ',{'SUNO_API_KEY':'test'}), \
-             patch('music.requests.post',side_effect=requests.Timeout('timeout')) as post:
-            with self.assertRaisesRegex(RuntimeError,'不确定'):
-                music.generate('instrumental',tmp)
-            with self.assertRaisesRegex(RuntimeError,'未获得任务 ID'):
-                music.generate('instrumental',tmp)
-            self.assertEqual(post.call_count,1)
+    def test_unselected_music_preserves_narration_without_reusing_old_background(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('finish.Models') as models, \
+             patch('finish.prepare_shots'), \
+             patch('finish.media.render', return_value=Path(tmp)/'video.mp4') as render, \
+             patch('finish.music.mix') as mix, \
+             patch('finish.quality.review', return_value={'passed': True}) as review:
+            old_music = Path(tmp)/'old-background.wav'
+            old_music.write_bytes(b'previous music')
+            plan = {'narration': 'voice.wav', 'scenes': [{'end': 2}],
+                    'music_settings': {'provider': 'suno_music_open', 'path': str(old_music)}}
+            result = finish.deliver(plan, tmp, log=lambda _: None)
+            self.assertEqual(result, Path(tmp)/'video.mp4')
+            self.assertEqual(render.call_args.args[0]['narration'], 'voice.wav')
+            self.assertNotIn('music_settings', plan)
+            mix.assert_not_called()
+            models.return_value.json.assert_not_called()
+            self.assertEqual(review.call_args.args[0], result)
+
+    def test_selected_user_music_is_mixed_and_reviewed(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('finish.Models') as models, \
+             patch('finish.prepare_shots'), \
+             patch('finish.media.render', return_value=Path(tmp)/'video.mp4'), \
+             patch('finish.music.mix', return_value=Path(tmp)/'video-music.mp4') as mix, \
+             patch('finish.quality.review', return_value={'passed': True}) as review:
+            plan = {'narration': 'voice.wav', 'scenes': [{'end': 2}]}
+            result = finish.deliver(plan, tmp, music_file='uploaded.wav', log=lambda _: None)
+            self.assertEqual(mix.call_args.args[2], 'uploaded.wav')
+            self.assertEqual(plan['music_settings']['path'], str(Path('uploaded.wav').resolve()))
+            self.assertEqual(review.call_args.args[0], result)
+            models.return_value.json.assert_not_called()
 
     def test_final_mixed_video_is_reviewed_and_failure_blocks_delivery(self):
         with tempfile.TemporaryDirectory() as tmp, \

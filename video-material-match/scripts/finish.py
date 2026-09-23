@@ -140,25 +140,12 @@ def deliver(plan, output, width=1920, height=1080, catalog='data/catalog', music
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     plan['output_color'] = 'bt709'
+    if not music_file:
+        plan.pop('music_settings', None)
     models = Models()
     prepare_shots(plan, catalog, models, log, checkpoint=output/'plan.json')
     write_json(output/'plan.json', plan)
-    if plan.get('narration'):
-        saved_music = plan.get('music_settings', {}).get('path')
-        if not music_file and saved_music and Path(saved_music).is_file():
-            music_file = saved_music
-        if not music_file:
-            settings = plan.get('music_settings', {})
-            if not settings.get('prompt'):
-                settings = models.json('为以下混剪文案设计适合铺在口播下面的纯音乐。只返回 '
-                    '{"prompt":"英文音乐描述，含情绪、乐器、节奏、no vocals/no humming/under narration"}。'
-                    '不要生成歌词，不模仿具体艺人。文案：'+plan['script'])
-                if not isinstance(settings.get('prompt'), str) or not settings['prompt'].strip():
-                    raise ValueError('音乐提示词为空')
-            settings['provider'] = 'suno_music_open'
-            plan['music_settings'] = settings
-            write_json(output/'plan.json', plan)
-            music_file = music.generate(settings['prompt'], output, log)
+    if plan.get('narration') and music_file:
         plan.setdefault('music_settings', {}).update({'path': str(Path(music_file).resolve()),
                                                      'narration_lufs': music.VOICE_LUFS,
                                                      'music_lufs': music.MUSIC_LUFS, 'ducking': True})
@@ -166,7 +153,7 @@ def deliver(plan, output, width=1920, height=1080, catalog='data/catalog', music
         write_json(output/'plan.json', plan)
         log('导出画面、配音与字幕…')
         video = media.render(plan, output, width, height)
-        if plan.get('narration'):
+        if plan.get('narration') and music_file:
             video = music.mix(video, plan['narration'], music_file, output, plan['scenes'][-1]['end'])
         report = quality.review(video, plan, output, models, log)
         write_json(output/f'quality-attempt-{attempt}.json', report)

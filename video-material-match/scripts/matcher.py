@@ -6,6 +6,7 @@ import random
 import re
 import sqlite3
 import time
+import uuid
 from contextlib import closing
 from pathlib import Path
 
@@ -102,7 +103,12 @@ class Catalog:
         # FAISS snapshot avoids mismatched IDs after crashes or changed files.
         index = faiss.IndexIDMap2(faiss.IndexFlatIP(len(vectors[0])))
         index.add_with_ids(np.stack(vectors), np.array(list(records), dtype=np.int64))
-        (self.folder / 'vectors.faiss').write_bytes(faiss.serialize_index(index).tobytes())
+        temporary = self.folder / f'vectors.{uuid.uuid4().hex}.tmp'
+        try:
+            temporary.write_bytes(faiss.serialize_index(index).tobytes())
+            temporary.replace(self.folder / 'vectors.faiss')
+        finally:
+            temporary.unlink(missing_ok=True)
         def search(vector, count):
             v = unit_vector(vector)
             if len(v) != index.d:

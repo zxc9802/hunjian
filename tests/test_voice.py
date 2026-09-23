@@ -1,3 +1,5 @@
+import hashlib
+import json
 import sys
 import unittest
 import tempfile
@@ -9,6 +11,117 @@ import voice
 
 
 class VoiceTests(unittest.TestCase):
+    def save_task(self, folder, text, state, task_id, audio=None, speaker='https://example.com/speaker.wav'):
+        spec = {'text': text, 'speaker': speaker, 'emotion_hash': 'hash', 'alpha': .8}
+        digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:24]
+        record = Path(folder) / (digest + '.json')
+        record.write_text(json.dumps({'task_id': task_id, 'state': state, 'spec': spec,
+                                     'result': {'state': state}}), encoding='utf-8')
+        if audio:
+            record.with_suffix('.wav').write_bytes(audio)
+        return record
+
+    def test_failed_segment_is_resubmitted_once_and_previous_attempt_is_preserved(self):
+        created = Mock(status_code=200)
+        created.json.return_value = {'task_id': 'retry-task'}
+        success = Mock(status_code=200)
+        success.json.return_value = {'state': 'SUCCESS', 'audio_url': 'https://example.com/audio.wav'}
+        with tempfile.TemporaryDirectory() as tmp, patch('voice.headers', return_value={}), \
+             patch('voice.requests.post', return_value=created) as post, \
+             patch('voice.requests.get', side_effect=[success, Mock(status_code=200, content=b'retried-audio')]), \
+             patch('voice.media.duration', return_value=1):
+            record = self.save_task(tmp, '第二段', 'FAILURE', 'failed-task')
+            audio = voice.synthesize('第二段', 'https://example.com/speaker.wav',
+                                    'https://example.com/emotion.wav', 'hash', .8, tmp, log=lambda _: None)
+            self.assertEqual(audio.read_bytes(), b'retried-audio')
+            self.assertEqual(post.call_count, 1)
+            saved = json.loads(record.read_text(encoding='utf-8'))
+            self.assertEqual(saved['task_id'], 'retry-task')
+            self.assertEqual(saved['state'], 'SUCCESS')
+            self.assertEqual(saved['attempts'][0]['task_id'], 'failed-task')
+
+    def test_retry_failure_stops_until_next_resume(self):
+        created = Mock(status_code=200)
+        created.json.return_value = {'task_id': 'retry-task'}
+        failed = Mock(status_code=200)
+        failed.json.return_value = {'state': 'FAILURE', 'error': {'message': 'provider failure'}}
+        with tempfile.TemporaryDirectory() as tmp, patch('voice.headers', return_value={}), \
+             patch('voice.requests.post', return_value=created) as post, \
+             patch('voice.requests.get', return_value=failed):
+            self.save_task(tmp, '第二段', 'FAILURE', 'failed-task')
+            with self.assertRaisesRegex(RuntimeError, 'TTS 任务失败'):
+                voice.synthesize('第二段', 'https://example.com/speaker.wav',
+                                 'https://example.com/emotion.wav', 'hash', .8, tmp, log=lambda _: None)
+            self.assertEqual(post.call_count, 1)
+
+    def test_existing_pending_task_is_polled_without_resubmission(self):
+        success = Mock(status_code=200)
+        success.json.return_value = {'state': 'SUCCESS', 'audio_url': 'https://example.com/audio.wav'}
+        with tempfile.TemporaryDirectory() as tmp, patch('voice.headers', return_value={}), \
+             patch('voice.requests.post') as post, \
+             patch('voice.requests.get', side_effect=[success, Mock(status_code=200, content=b'existing-audio')]) as get, \
+             patch('voice.media.duration', return_value=1):
+            self.save_task(tmp, '第二段', 'STARTED', 'running-task')
+            voice.synthesize('第二段', 'https://example.com/speaker.wav',
+                             'https://example.com/emotion.wav', 'hash', .8, tmp, log=lambda _: None)
+            post.assert_not_called()
+            self.assertEqual(get.call_args_list[0].kwargs['params'], {'task_id': 'running-task'})
+
+    def test_uncertain_submission_is_not_repeated_on_resume(self):
+        import requests
+        with tempfile.TemporaryDirectory() as tmp, patch('voice.headers', return_value={}), \
+             patch('voice.requests.post', side_effect=requests.Timeout('reply lost')) as post:
+            args = ('第二段', 'https://example.com/speaker.wav',
+                    'https://example.com/emotion.wav', 'hash', .8, tmp)
+            self.save_task(tmp, '第二段', 'FAILURE', 'failed-task')
+            with self.assertRaisesRegex(RuntimeError, '提交结果不确定'):
+                voice.synthesize(*args, log=lambda _: None)
+            with self.assertRaisesRegex(RuntimeError, '提交结果不确定'):
+                voice.synthesize(*args, log=lambda _: None)
+            self.assertEqual(post.call_count, 1)
+
+    def test_server_error_submission_is_not_repeated_but_rejection_can_retry(self):
+        for status, can_retry in ((502, False), (429, True)):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp, \
+                 patch('voice.headers', return_value={}), \
+                 patch('voice.requests.post', return_value=Mock(status_code=status, text='unavailable')) as post:
+                args = ('第二段', 'https://example.com/speaker.wav',
+                        'https://example.com/emotion.wav', 'hash', .8, tmp)
+                with self.assertRaisesRegex(RuntimeError, f'HTTP {status}'):
+                    voice.synthesize(*args, log=lambda _: None)
+                with self.assertRaisesRegex(RuntimeError, f'HTTP {status}' if can_retry else '提交结果不确定'):
+                    voice.synthesize(*args, log=lambda _: None)
+                self.assertEqual(post.call_count, 2 if can_retry else 1)
+
+    def test_expired_speaker_link_keeps_successful_legacy_segment_cache(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('voice.headers', return_value={}), \
+             patch('voice.media.run'), patch('voice.media.duration', return_value=1):
+            root = Path(tmp)
+            speaker, emotion = root/'speaker.wav', root/'emotion.wav'
+            speaker.write_bytes(b'speaker')
+            emotion.write_bytes(b'emotion')
+            cache = root/'voice-cache'
+            cache.mkdir()
+            speaker_hash = hashlib.sha256(speaker.read_bytes()).hexdigest()
+            old_url = 'https://example.com/speaker.wav'
+            reference = cache/f'speaker-{speaker_hash[:16]}.json'
+            reference.write_text(json.dumps({'url': old_url, 'uploaded_at': 0,
+                                            'source_sha256': speaker_hash}))
+            (cache/f'speaker-{speaker_hash[:16]}-15s.wav').write_bytes(b'prepared speaker')
+            record = self.save_task(cache, '第一段', 'SUCCESS', 'paid-task', audio=b'paid-audio')
+            uploaded = Mock(status_code=200)
+            uploaded.json.return_value = {'data': 'https://example.com/refreshed-speaker.wav'}
+            plan = {'fps': 25, 'scenes': [{'text': '第一段', 'start': 0, 'end': 1}]}
+            with patch('voice.requests.post', return_value=uploaded) as post, \
+                 patch('voice.requests.get') as get, \
+                 patch('voice.upload_emotion', return_value=('https://example.com/emotion.wav', 'hash')):
+                voice.synthesize_plan(plan, root, speaker_file=speaker, emotion_file=emotion, log=lambda _: None)
+            self.assertEqual(post.call_count, 1)
+            self.assertIn('files', post.call_args.kwargs)
+            get.assert_not_called()
+            self.assertEqual(record.with_suffix('.wav').read_bytes(), b'paid-audio')
+            self.assertEqual(plan['voice_settings']['speaker_url'], 'https://example.com/refreshed-speaker.wav')
+
     def test_emotion_default_and_boundaries(self):
         self.assertEqual(voice.validate_emotion(), .8)
         for value in (.1, .15, .8, .85):

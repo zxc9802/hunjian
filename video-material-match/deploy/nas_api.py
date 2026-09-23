@@ -88,7 +88,8 @@ class Jobs:
                 return '配音与剪辑'
             if any(not scene.get('shots') for scene in scenes):
                 return '动态镜头补齐'
-            if not (folder / 'video-music.mp4').is_file():
+            video = 'video-music.mp4' if plan.get('music_settings', {}).get('path') else 'video.mp4'
+            if not (folder / video).is_file():
                 return '视频导出'
             return '成片检查'
         except (OSError, ValueError, TypeError):
@@ -260,7 +261,10 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
     @asynccontextmanager
     async def lifespan(app):
         if start_worker:
+            from auto_index import AutoIndexer
             threading.Thread(target=work, name='mixer-worker', daemon=True).start()
+            threading.Thread(target=AutoIndexer(catalog=os.environ.get('CATALOG_DIR', '/data/catalog')).run,
+                             args=(stop,), name='material-indexer', daemon=True).start()
         yield
         stop.set()
 
@@ -278,7 +282,7 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
     @app.get('/health')
     def health():
         return {'status': 'ok', 'service': 'hainan-mixer', 'worker_concurrency': 1,
-                'capabilities': ['cover_editor']}
+                'capabilities': ['cover_editor', 'auto_index']}
 
     @app.post('/v1/jobs', status_code=202, dependencies=[Depends(authorize)])
     async def submit(request: Request):

@@ -61,10 +61,9 @@ def upload_reference(path, folder, kind):
     path, folder = Path(path), Path(folder)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     cache = folder / f'{kind}-{digest[:16]}.json'
-    if cache.exists():
-        data = json.loads(cache.read_text(encoding='utf-8'))
-        if time.time() - data['uploaded_at'] < 24 * 3600:
-            return checked_url(data['url']), digest
+    previous = json.loads(cache.read_text(encoding='utf-8')) if cache.exists() else {}
+    if previous and time.time() - previous['uploaded_at'] < 24 * 3600:
+        return checked_url(previous['url']), digest
     folder.mkdir(parents=True, exist_ok=True)
     prepared = folder / f'{kind}-{digest[:16]}-15s.wav'
     media.run(['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y','-i',str(path),
@@ -82,7 +81,11 @@ def upload_reference(path, folder, kind):
     data = response_json(r)
     value = data.get('data')
     url = checked_url(value.get('url') if isinstance(value,dict) else value)
-    write_json(cache, {'url': url, 'uploaded_at': time.time(), 'source_sha256': digest})
+    reference = {'url': url, 'uploaded_at': time.time(), 'source_sha256': digest}
+    if kind == 'speaker':
+        # Preserve legacy TTS cache keys when the same source gets a fresh upload URL.
+        reference['cache_url'] = previous.get('cache_url') or previous.get('url') or url
+    write_json(cache, reference)
     return url, digest
 
 
@@ -90,10 +93,10 @@ def upload_emotion(path, folder):
     return upload_reference(path, folder, 'emotion')
 
 
-def synthesize(text, speaker, emotion_url, emotion_hash, alpha, folder, log=print):
+def synthesize(text, speaker, emotion_url, emotion_hash, alpha, folder, log=print, *, speaker_cache_key=None):
     if not text.strip() or len(text) > 2048:
         raise ValueError('单段配音文本须为 1–2048 字符')
-    spec = {'text': text, 'speaker': speaker, 'emotion_hash': emotion_hash, 'alpha': alpha}
+    spec = {'text': text, 'speaker': speaker_cache_key or speaker, 'emotion_hash': emotion_hash, 'alpha': alpha}
     digest = hashlib.sha256(json.dumps(spec,sort_keys=True).encode()).hexdigest()[:24]
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -101,19 +104,33 @@ def synthesize(text, speaker, emotion_url, emotion_hash, alpha, folder, log=prin
     job = json.loads(record.read_text(encoding='utf-8')) if record.exists() else {}
     if audio.exists() and job.get('state') == 'SUCCESS':
         media.duration(audio)
+        log('复用已完成配音，不重复生成')
         return audio
     if job.get('state') in ('FAILURE','FAILED','ERROR','REVOKED'):
-        raise RuntimeError(f'历史配音任务失败，检查 {record} 后再决定是否重新提交')
+        log('本段上次配音失败，重新提交一次')
+        attempts = job.get('attempts', []) + [{key: job.get(key) for key in ('task_id', 'state', 'result')}]
+        job = {'spec': spec, 'attempts': attempts}
     if not job.get('task_id'):
+        if job.get('submission') == 'uncertain':
+            raise RuntimeError(f'配音提交结果不确定，未获得任务 ID；请核对服务商记录后恢复：{record}')
         payload = {'text': text, 'speaker_audio_url': checked_url(speaker),
                    'emotion_audio_url': emotion_url, 'emotion_alpha': validate_emotion(alpha)}
-        # A failed or timed-out POST may already have incurred a charge; never
-        # blindly resubmit. Once task_id is received, all later runs resume it.
-        data = response_json(requests.post(TASK_URL, headers=headers(), json=payload,
-                                           timeout=(15,90), allow_redirects=False))
+        authorization = headers()
+        # Persist before POST: a lost reply is different from a confirmed failed task.
+        job.update({'spec': spec, 'request': payload, 'submission': 'uncertain'})
+        write_json(record, job)
+        try:
+            response = requests.post(TASK_URL, headers=authorization, json=payload,
+                                     timeout=(15,90), allow_redirects=False)
+        except requests.RequestException as exc:
+            raise RuntimeError('配音提交结果不确定，请核对服务商任务后恢复：'+clean_error(exc)) from None
+        if 400 <= response.status_code < 500:
+            job['submission'] = 'rejected'
+            write_json(record, job)
+        data = response_json(response)
         if not data.get('task_id'):
             raise ValueError('TTS 提交未返回 task_id，请核对服务商任务，避免重复提交')
-        job = {'task_id': data['task_id'], 'state': 'PENDING', 'spec': spec}
+        job.update({'task_id': data['task_id'], 'state': 'PENDING', 'submission': 'submitted'})
         write_json(record, job)
     deadline, previous, poll_errors = time.monotonic() + 900, None, 0
     while time.monotonic() < deadline:
@@ -163,7 +180,7 @@ def synthesize(text, speaker, emotion_url, emotion_hash, alpha, folder, log=prin
             temp.replace(audio)
             return audio
         if state in ('FAILURE','FAILED','ERROR','REVOKED'):
-            raise RuntimeError(f'TTS 任务失败：{clean_error(result)}')
+            raise RuntimeError(f'TTS 任务失败：{clean_error(result)}；可点击“从配音与剪辑继续”重试本段')
         time.sleep(5)
     raise TimeoutError(f'TTS 等待超过 15 分钟；任务已保存在 {record}，重跑会继续查询')
 
@@ -174,15 +191,20 @@ def synthesize_plan(plan, output, emotion_alpha=.8, emotion_file=EMOTION_FILE,
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     speaker_hash = None
+    speaker_cache_key = None
     if speaker_url:
         speaker_url = checked_url(speaker_url)
     else:
         speaker_url, speaker_hash = upload_reference(speaker_file, output / 'voice-cache', 'speaker')
+        reference = output / 'voice-cache' / f'speaker-{speaker_hash[:16]}.json'
+        if reference.exists():
+            speaker_cache_key = json.loads(reference.read_text(encoding='utf-8')).get('cache_url')
     emotion_url, emotion_hash = upload_emotion(emotion_file, output / 'voice-cache')
     fps, cursor, names = plan['fps'], 0, []
     for i, scene in enumerate(plan['scenes']):
         log(f'生成配音 {i+1}/{len(plan["scenes"])}：{scene["text"]}')
-        audio = synthesize(scene['text'], speaker_url, emotion_url, emotion_hash, alpha, output/'voice-cache',log)
+        audio = synthesize(scene['text'], speaker_url, emotion_url, emotion_hash, alpha, output/'voice-cache',log,
+                           speaker_cache_key=speaker_cache_key)
         seconds = media.duration(audio)
         frames = math.ceil(seconds * fps)
         aligned = output / f'voice-{i+1:03}.wav'
@@ -192,6 +214,7 @@ def synthesize_plan(plan, output, emotion_alpha=.8, emotion_file=EMOTION_FILE,
                       'timing': 'tts-segment', 'voice': str(aligned), 'voice_duration': seconds})
         cursor += frames
         names.append(aligned.name)
+        write_json(output/'plan.json',plan)
     (output/'voice-concat.txt').write_text(''.join(f"file '{name}'\n" for name in names), encoding='utf-8')
     media.run(['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y','-f','concat','-safe','1',
                '-i','voice-concat.txt','-c:a','pcm_s16le','narration.wav'],cwd=output)

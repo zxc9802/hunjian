@@ -1,6 +1,6 @@
 ---
 name: video-material-match
-description: 当用户要将文案与 Z 盘或本地视频素材自动匹配、建立视频向量库、按场景混剪并配音时使用。支持 NAS 任务 API、FAISS 检索、视频核验、IndexTTS2 配音、Suno 配乐和 Gemini 成片检查。
+description: 当用户要将文案与 Z 盘或本地视频素材自动匹配、建立视频向量库、按场景混剪并配音时使用。支持 NAS 任务 API、FAISS 检索、视频核验、IndexTTS2 配音、用户音乐混音和 Gemini 成片检查。
 ---
 
 # 视频混剪素材匹配
@@ -19,7 +19,7 @@ description: 当用户要将文案与 Z 盘或本地视频素材自动匹配、�
 - 当前带配乐与成片检查的工作台：`http://127.0.0.1:8767/`（旧 8765 服务不具备新交付流程）。
 - 素材盘：`Z:\`，对应 `\\192.168.20.225\海南康养素材库`。只读源视频，缓存与导出写到工作区。
 - 全量索引：工作区 `data\catalog-full`；完成校验后通过 `data\catalog\active.json` 启用，匹配自动跟随。产物：工作区 `outputs\<任务名>`。
-- `OPENLUX_API_KEY` 供 embedding/视觉模型使用，`RERANK_API_KEY` 供 302 rerank/TTS 使用；可单独设置 `TTS_API_KEY`。`SUNO_API_KEY` 供 OpenLux 的 Suno 音乐接口使用，与视觉密钥分开。只从进程环境读取，禁止把实际密钥写入技能、报告或代码。
+- `OPENLUX_API_KEY` 供 embedding/视觉模型使用，`RERANK_API_KEY` 供 302 rerank/TTS 使用；可单独设置 `TTS_API_KEY`。配乐仅使用用户提供的音频，无需音乐生成密钥。只从进程环境读取密钥，禁止把实际密钥写入技能、报告或代码。
 - 情绪参考必须使用 [assets/emotion-reference.wav](assets/emotion-reference.wav)，它是用户上传音频的原始副本。不要替换为接口文档的示例情绪音频。
 - 主音色参考使用 [assets/speaker-reference.mp3](assets/speaker-reference.mp3)，来源为用户上传的 `9月21日.mp3`。与情绪参考音频分开上传，分别传入 speaker_audio_url 和 emotion_audio_url。更换本地音色可传 `--speaker-file`，使用外部音频可传 `--speaker-url`。
 - 情绪强度默认 **0.8**，最小 **0.1**、最大 **0.85**、步长 **0.05**。CLI 和 HTTP 服务端均执行相同校验。
@@ -39,7 +39,7 @@ description: 当用户要将文案与 Z 盘或本地视频素材自动匹配、�
 .\.venv\Scripts\python.exe <skill>/scripts/cli.py match --text-file script.txt --output outputs/example
 .\.venv\Scripts\python.exe <skill>/scripts/cli.py voice --plan outputs/example/plan.json --emotion-alpha 0.8
 .\.venv\Scripts\python.exe <skill>/scripts/cli.py render --plan outputs/example/plan.json
-# render 自动补充镜头、配乐并检查实际成片；已有配乐用 --music-file <本地音频> 复用。
+# render 自动补充镜头并检查实际成片；需要背景音乐时用 --music-file <用户提供的本地音频>，默认不添加背景音乐。
 
 # 本地页面含真实滑块，界面只使用已索引素材；索引通过上面的命令维护。
 .\.venv\Scripts\python.exe <skill>/scripts/cli.py ui
@@ -61,10 +61,10 @@ description: 当用户要将文案与 Z 盘或本地视频素材自动匹配、�
 
 - 默认使用 IndexTTS2，按每个文案场景分别合成，测量实际音频时长，再按输出帧对齐并拼接。此为**场景级配音时间轴**，不声称得到词级 ASR 对齐。字幕整段出现与对应画面同帧切换。
 - 用户只要无配音预览时跳过 `voice`；此时时间轴为阅读速度估算，必须标为 estimated。
-- 原始情绪音频保留；上传使用它的前 15 秒副本。TTS task_id 会立即保存；等待超时后继续查询同一任务，不能自动重复下单。
-- 配乐默认使用已实测的 `suno_music_open` 纯音乐，风格依据文案选择；工作台可选腾讯 COS 音乐库曲目。音乐长于成片时裁切，短于成片时循环到片尾，淡入淡出并在人声出现时自动避让。只要无声预览时不生成音乐。
+- 原始情绪音频保留；上传使用它的前 15 秒副本。TTS task_id 会立即保存；等待超时后继续查询同一任务。用户续作时只对明确失败的段落重新提交一次，已成功段落复用；本次再失败则停止。提交结果不确定且没有 task_id 时先核对服务商记录。参考音频链接刷新不会使已成功段落重新生成。
+- 背景音乐仅使用用户提供的音频；工作台可上传到腾讯 COS 音乐库，每首支持试听、暂停和拖动进度。未上传或未选曲时仍可制作视频，保留口播，不添加背景音乐。选曲后音乐长于成片时裁切，短于成片时循环到片尾，淡入淡出并在人声出现时自动避让。无声预览不添加音乐。
 - 当前音量偏好：人声约 -19 LUFS、音乐约 -25 LUFS，轻度避让（ratio=2）。背景音乐应清楚可闻，不能在口播期间被压到几乎听不见，同时保留口播清晰度。
-- 交付检查通过的 `video-music.mp4`（有声配乐）或 `preview.mp4`（无声）、`plan.json`、`captions.srt`/`estimated.srt`、`cuts.json`、`quality-report.json`。`video.mp4` 是混入音乐前的中间产物，不能冒充最终成片。
+- 交付检查通过的 `video-music.mp4`（口播加用户音乐）、`video.mp4`（仅口播）或 `preview.mp4`（无声），以及 `plan.json`、`captions.srt`/`estimated.srt`、`cuts.json`、`quality-report.json`。选了背景音乐时，`video.mp4` 仍是混入音乐前的中间产物，不能冒充最终成片。
 - 报告当前索引覆盖量，不把小样索引说成全盘完成。接口返回 200 还要检查向量非空、候选合法、视频文件可播放。
 
 接口格式、上传兼容性、恢复方法见 [references/providers.md](references/providers.md)。

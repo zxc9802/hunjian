@@ -7,11 +7,12 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'video-material-match' / 'scripts'))
 import matcher
 import media
-from index_all import segments
+from index_all import index_task, segments
 from progress_ui import read_progress
 
 
@@ -81,6 +82,29 @@ class FullIndexTests(unittest.TestCase):
                                       'stream=nb_frames,r_frame_rate','-of','json',str(proxy)]))
             self.assertEqual(info['streams'][0]['r_frame_rate'],'1/1')
             self.assertEqual(int(info['streams'][0]['nb_frames']),1)
+
+    def test_shared_index_task_creates_one_fps_proxy_and_reuses_model_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root/'source.mp4'
+            media.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=64x64:r=25',
+                       '-t', '0.32', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(source)])
+            stamp = matcher.file_stamp(source)
+            task = {'path': str(source), 'stamp': stamp, 'start': 0., 'end': .32}
+            models = SimpleNamespace(embed=lambda **_: np.array([1, 0, 0], dtype=np.float32),
+                                     json=lambda *args: {'description': '彩色画面'})
+            with patch('index_all.Models', return_value=models) as factory:
+                clip, vector, _ = index_task(task, root/'catalog')
+                self.assertEqual(clip['description'], '彩色画面')
+                self.assertEqual(len(vector), 3)
+                info = json.loads(media.run(['ffprobe', '-v', 'error', '-show_entries',
+                                             'stream=nb_frames,r_frame_rate', '-of', 'json', clip['proxy']]))
+                self.assertEqual(info['streams'][0]['r_frame_rate'], '1/1')
+                self.assertEqual(int(info['streams'][0]['nb_frames']), 1)
+                with patch.object(models, 'embed', side_effect=AssertionError('重复调用模型')), \
+                     patch.object(models, 'json', side_effect=AssertionError('重复调用模型')):
+                    index_task(task, root/'catalog')
+                self.assertEqual(factory.call_count, 2)
 
 
 if __name__ == '__main__':

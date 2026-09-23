@@ -1,9 +1,10 @@
+import io
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 from fastapi.testclient import TestClient
@@ -131,6 +132,57 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(resumed.status_code, 202)
         self.assertEqual(resumed.json()['state'], 'queued')
         self.assertEqual(resumed.json()['snapshot']['checkpoint'], '动态镜头补齐')
+
+    def test_music_preview_streams_each_format_and_byte_ranges(self):
+        for suffix, mime in (('mp3', 'audio/mpeg'), ('wav', 'audio/wav'), ('m4a', 'audio/mp4')):
+            key = 'music-library/' + 'a' * 32 + '/海边.' + suffix
+            for partial in (False, True):
+                with self.subTest(suffix=suffix, partial=partial):
+                    stream = io.BytesIO(b'ID3' if partial else b'ID3audio')
+                    upstream = {'Body': Mock(get_raw_stream=Mock(return_value=stream)),
+                                'Content-Length': str(len(stream.getvalue()))}
+                    if partial:
+                        upstream['Content-Range'] = 'bytes 0-2/8'
+                    with patch('workbench.music_library.client') as cos:
+                        cos.return_value.get_object.return_value = upstream
+                        response = self.client.get('/api/music/preview', params={'key': key},
+                            headers={'Range': 'bytes=0-2'} if partial else {})
+                        self.assertEqual(response.status_code, 206 if partial else 200)
+                        self.assertEqual(response.content, b'ID3' if partial else b'ID3audio')
+                        self.assertEqual(response.headers['content-type'], mime)
+                        self.assertEqual(response.headers['accept-ranges'], 'bytes')
+                        self.assertEqual(response.headers['cache-control'], 'no-store')
+                        if partial:
+                            self.assertEqual(response.headers['content-range'], 'bytes 0-2/8')
+                        kwargs = cos.return_value.get_object.call_args.kwargs
+                        self.assertEqual(kwargs['Key'], key)
+                        self.assertEqual(kwargs.get('Range'), 'bytes=0-2' if partial else None)
+                    self.assertTrue(stream.closed)
+
+    def test_music_preview_rejects_invalid_input_and_hides_provider_errors(self):
+        from qcloud_cos.cos_exception import CosServiceError
+        key = 'music-library/' + 'a' * 32 + '/海边.mp3'
+        with patch('workbench.music_library.client') as cos:
+            for invalid in ('', '../private', 'other/file.mp3'):
+                self.assertEqual(self.client.get('/api/music/preview', params={'key': invalid}).status_code, 400)
+            for invalid in ('bytes=', 'bytes=2-1', 'bytes=0-1,4-5'):
+                self.assertEqual(self.client.get('/api/music/preview', params={'key': key},
+                    headers={'Range': invalid}).status_code, 416)
+            cos.assert_not_called()
+            for status, expected in ((404, 404), (416, 416), (403, 503)):
+                cos.return_value.get_object.side_effect = CosServiceError('GET', 'private provider detail', status)
+                response = self.client.get('/api/music/preview', params={'key': key})
+                self.assertEqual(response.status_code, expected)
+                self.assertNotIn('private provider detail', response.text)
+
+    def test_music_preview_requires_login(self):
+        settings = Settings('http://nas.local:8780', 'n'*40, self.path,
+                            'https://video.example.com', 'a-strong-test-password')
+        client = TestClient(create_app(settings, self.nas), base_url=settings.public_url)
+        with patch('workbench.music_library.client') as cos:
+            self.assertEqual(client.get('/api/music/preview', params={
+                'key': 'music-library/' + 'a'*32 + '/海边.mp3'}).status_code, 401)
+            cos.assert_not_called()
 
     def test_lost_submission_recovers_with_same_key_even_after_gateway_restart(self):
         self.nas.drop_reply = True

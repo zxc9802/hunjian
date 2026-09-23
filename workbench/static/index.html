@@ -70,11 +70,12 @@
             </section>
             <section class="settings-section music-section" aria-labelledby="music-heading">
               <h2 id="music-heading">背景音乐</h2>
-              <p class="small muted">从音乐库选择一首，成片会自动截到视频结束；不选则自动生成配乐。</p>
+              <p class="small muted">可上传音乐并逐首试听，选中的音乐会铺满至视频结束；不选则保留口播，不添加背景音乐。</p>
               <label for="music-select">本次使用</label>
-              <select id="music-select"><option value="">自动生成配乐</option></select>
+              <select id="music-select"><option value="">不添加背景音乐</option></select>
               <div class="music-upload"><input id="music-file" type="file" accept=".mp3,.wav,.m4a,audio/*" aria-label="选择要上传的音乐"><button id="music-upload" type="button" class="button quiet">上传到音乐库</button></div>
               <p id="music-status" class="small muted" role="status"></p>
+              <ul id="music-list" class="music-list" aria-label="音乐库试听" hidden></ul>
             </section>
             <p id="form-error" class="error" role="alert"></p>
             <div id="create-actions" class="create-actions"><button id="generate" class="button primary" type="submit">开始制作 <svg class="icon"><use href="#i-arrow"/></svg></button><p>提交后可离开页面，稍后从制作记录查看。</p></div>

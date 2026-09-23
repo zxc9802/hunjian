@@ -41,7 +41,7 @@ def main():
     render.add_argument('--width',type=int,default=1920)
     render.add_argument('--height',type=int,default=1080)
     render.add_argument('--catalog',default='data/catalog')
-    render.add_argument('--music-file',help='复用已生成的配乐；默认通过 Suno 生成纯音乐')
+    render.add_argument('--music-file',help='使用用户提供的本地音乐；不指定则不添加背景音乐')
     ui = sub.add_parser('ui',help='本地操作页面，含情绪滑块')
     ui.add_argument('--port',type=int,default=8767)
     ui.add_argument('--catalog',default='data/catalog')

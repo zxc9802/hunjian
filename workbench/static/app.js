@@ -11,7 +11,7 @@ function toast(message) { $('toast').textContent = message; $('toast').hidden = 
 function storageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
 function storageSet(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } }
 function stopTimers() { clearTimeout(pollTimer); clearTimeout(refreshTimer); clearTimeout(healthTimer); clearTimeout(editTimer); }
-function showLogin() { authenticated = false; coverEditorAvailable = false; stopTimers(); voice.pause(); $('video').pause(); $('app').hidden = true; $('loading-view').hidden = true; $('login-view').hidden = false; }
+function showLogin() { authenticated = false; coverEditorAvailable = false; stopTimers(); pauseMusic(); voice.pause(); $('video').pause(); $('app').hidden = true; $('loading-view').hidden = true; $('login-view').hidden = false; }
 async function api(path, options = {}) {
   let response;
   try { response = await fetch(path, {credentials:'same-origin', ...options, headers:{'Content-Type':'application/json','X-Workbench-Request':'1', ...options.headers}, signal:AbortSignal.timeout(40000)}); }
@@ -30,15 +30,30 @@ function setSpec(spec) {
   $('music-select').value = musicSelection;
   updateControls(spec);
 }
+function pauseMusic(except = null) {
+  $('music-list').querySelectorAll('audio').forEach(player => { if (player !== except) player.pause(); });
+}
 async function loadMusic() {
   try {
     const tracks = (await api('/api/music')).tracks;
-    $('music-select').replaceChildren(new Option('自动生成配乐', ''));
-    for (const track of tracks) $('music-select').add(new Option(`${track.name} · ${(track.size / 1024 / 1024).toFixed(1)} MB`, track.key));
+    $('music-select').replaceChildren(new Option('不添加背景音乐', ''));
+    pauseMusic(); $('music-list').replaceChildren();
+    for (const track of tracks) {
+      $('music-select').add(new Option(`${track.name} · ${(track.size / 1024 / 1024).toFixed(1)} MB`, track.key));
+      const item = document.createElement('li');
+      const name = document.createElement('span'); name.textContent = track.name;
+      const player = document.createElement('audio'); player.controls = true; player.preload = 'none';
+      player.setAttribute('aria-label', `试听 ${track.name}`);
+      player.src = `/api/music/preview?key=${encodeURIComponent(track.key)}`;
+      player.onplay = () => { pauseMusic(player); voice.pause(); $('video').pause(); };
+      player.onerror = () => toast(`“${track.name}”暂时无法试听，请检查连接或音乐格式后重试。`);
+      item.append(name, player); $('music-list').append(item);
+    }
+    $('music-list').hidden = tracks.length === 0;
     if (musicSelection && !tracks.some(track => track.key === musicSelection))
       $('music-select').add(new Option('已选曲目（当前未在列表中）', musicSelection));
     $('music-select').value = musicSelection;
-    $('music-status').textContent = `${tracks.length} 首音乐已存入腾讯 COS`;
+    $('music-status').textContent = tracks.length ? `${tracks.length} 首已上传音乐，可逐首试听` : '音乐库暂无曲目，可上传后试听；也可直接制作无背景音乐的视频。';
   } catch (error) { $('music-status').textContent = error.message; }
 }
 function updateControls(spec = selected?.spec || draftSpec()) {
@@ -348,9 +363,9 @@ $('history-toggle').onclick = () => { const open = $('history-panel').classList.
 $('refresh-history').onclick = refreshHistory; $('connection').onclick = checkConnection;
 $('voice-preview').onclick = async () => { if (!voice.paused) { voice.pause(); return; } try { await voice.play(); } catch { toast('试听音频暂时无法播放，请稍后重试。'); } };
 function voiceLabel() { $('voice-preview').querySelector('span').textContent = voice.paused ? '试听音色' : '停止试听'; }
-voice.onplay = voiceLabel; voice.onpause = voiceLabel; voice.onended = voiceLabel;
+voice.onplay = () => { pauseMusic(); $('video').pause(); voiceLabel(); }; voice.onpause = voiceLabel; voice.onended = voiceLabel;
 $('video').addEventListener('error', () => { if ($('video').getAttribute('src')) $('video-error').textContent = '视频加载失败，请检查素材库连接后刷新此任务。'; });
-$('video').addEventListener('play', () => voice.pause());
+$('video').addEventListener('play', () => { pauseMusic(); voice.pause(); });
 $('login-form').onsubmit = async event => {
   event.preventDefault(); $('login-button').disabled = true; $('login-error').textContent = '';
   try { await api('/api/login',{method:'POST',body:JSON.stringify({password:$('password').value})}); $('password').value = ''; await boot(); }
