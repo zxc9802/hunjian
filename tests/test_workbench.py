@@ -19,6 +19,7 @@ class FakeNas:
         self.drop_reply = False
         self.offline = False
         self.state = 'queued'
+        self.capabilities = []
 
     def request(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
@@ -29,7 +30,22 @@ class FakeNas:
         response.headers['Content-Type'] = 'application/json'
         value = {}
         if path == '/health':
-            value = {'status': 'ok', 'service': 'hainan-mixer'}
+            value = {'status': 'ok', 'service': 'hainan-mixer', 'capabilities': self.capabilities}
+        elif path.endswith('/edit') and method == 'GET':
+            value = {'covers': [{'index': i, 'time': i + .3} for i in range(10)],
+                     'shots': [{'scene': 1, 'shot': 1, 'start': 0, 'end': 3,
+                                'white': '带爸妈过冬', 'yellow': '住得舒服'}],
+                     'edit': {'state': 'not_started'}}
+        elif path.endswith('/edit') and method == 'POST':
+            value = {'state': 'queued', 'spec': kwargs['json']}
+            response.status_code = 202
+        elif path.endswith('/edit-status'):
+            value = {'state': 'done', 'result': 'edit-test.mp4'}
+        elif '/covers/' in path:
+            response.headers['Content-Type'] = 'image/jpeg'
+            response._content = b'\xff\xd8\xff\xd9'
+            response._content_consumed = True
+            return response
         elif method == 'POST':
             key = kwargs['headers']['Idempotency-Key']
             self.tasks.setdefault(key, {'id': 'a' * 32, 'state': self.state})
@@ -168,6 +184,33 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(partial.content, b'ID3')
         self.assertEqual(partial.headers['content-range'], f'bytes 0-2/{len(audio)}')
         self.assertEqual(partial.headers['cache-control'], 'no-store')
+
+    def test_cover_editor_proxies_only_for_completed_authenticated_jobs(self):
+        self.assertFalse(self.client.get('/api/connection').json()['cover_editor_available'])
+        self.nas.capabilities = ['cover_editor']
+        self.assertTrue(self.client.get('/api/connection').json()['cover_editor_available'])
+        url = '/api/jobs/test-request-001/edit'
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.submit()
+        self.assertEqual(self.client.get(url).status_code, 409)
+        self.nas.state = 'done'
+        self.client.get('/api/jobs/test-request-001')
+        self.assertEqual(len(self.client.get(url).json()['covers']), 10)
+        body = {'cover_index': 0, 'cover_text': '海南过冬',
+                'titles': [{'white': '带爸妈过冬', 'yellow': '住得舒服'}]}
+        self.assertEqual(self.client.post(url, json=body, headers=self.headers).status_code, 202)
+        self.assertEqual(self.nas.calls[-1][2]['json'], body)
+        self.assertEqual(self.client.get(url + '-status').json()['state'], 'done')
+        image = self.client.get('/api/jobs/test-request-001/covers/0')
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(image.content, b'\xff\xd8\xff\xd9')
+        self.assertEqual(image.headers['content-type'], 'image/jpeg')
+        self.assertEqual(self.client.get('/api/jobs/test-request-001/covers/10').status_code, 404)
+        settings = Settings('http://nas.local:8780', 'n'*40, self.path,
+                            'https://video.example.com', 'a-strong-test-password')
+        private = TestClient(create_app(settings, self.nas), base_url=settings.public_url)
+        self.assertEqual(private.get(url).status_code, 401)
+        self.assertEqual(private.get('/api/jobs/test-request-001/covers/0').status_code, 401)
 
     def test_voice_upload_requires_login_and_same_origin(self):
         settings = Settings('http://nas.local:8780', 'n'*40, self.path,

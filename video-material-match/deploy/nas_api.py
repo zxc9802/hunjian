@@ -27,9 +27,14 @@ class Jobs:
             db.execute('''CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, request_key TEXT UNIQUE, spec TEXT,
                 state TEXT, created REAL, updated REAL, logs TEXT, result TEXT, error TEXT)''')
+            db.execute('''CREATE TABLE IF NOT EXISTS edits (
+                job_id TEXT PRIMARY KEY, spec TEXT NOT NULL, state TEXT NOT NULL,
+                updated REAL NOT NULL, result TEXT, error TEXT)''')
             # Never blindly resubmit a possibly billed model request after a crash.
             db.execute("UPDATE jobs SET state='interrupted', error=?, updated=? WHERE state='running'",
                        ('服务重启中断任务；保留输出和服务商任务记录，核对后再恢复。', time.time()))
+            db.execute("UPDATE edits SET state='interrupted', error=?, updated=? WHERE state='running'",
+                       ('服务重启中断文字导出，请核对后重新提交同一设置。', time.time()))
 
     @contextmanager
     def connect(self):
@@ -77,6 +82,55 @@ class Jobs:
                        (json.dumps((logs + [message])[-100:], ensure_ascii=False), time.time(), job_id))
         print(f'[{job_id}] {message}', flush=True)
 
+    def get_edit(self, job_id):
+        with self.connect() as db:
+            row = db.execute('SELECT spec,state,updated,result,error FROM edits WHERE job_id=?', (job_id,)).fetchone()
+        return ({'state': row['state'], 'updated': row['updated'], 'result': row['result'],
+                 'error': row['error'], 'spec': json.loads(row['spec'])} if row else {'state': 'not_started'})
+
+    def submit_edit(self, job_id, spec):
+        if self.get(job_id)['state'] != 'done':
+            raise HTTPException(409, '需要先完成原视频制作')
+        encoded = json.dumps(spec, sort_keys=True, ensure_ascii=False)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            previous = db.execute('SELECT state,spec FROM edits WHERE job_id=?', (job_id,)).fetchone()
+            if previous and previous['state'] in ('queued', 'running') and previous['spec'] != encoded:
+                raise HTTPException(409, '上一版文字仍在导出，请等待完成')
+            if not previous or previous['spec'] != encoded or previous['state'] in ('failed', 'interrupted'):
+                db.execute('INSERT INTO edits VALUES (?,?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET '
+                           'spec=excluded.spec,state=excluded.state,updated=excluded.updated,result=NULL,error=NULL',
+                           (job_id, encoded, 'queued', time.time(), None, None))
+        return self.get_edit(job_id)
+
+    def run_edit(self, runner):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute("SELECT job_id,spec FROM edits WHERE state='queued' ORDER BY updated LIMIT 1").fetchone()
+            if not row:
+                return False
+            db.execute("UPDATE edits SET state='running',updated=? WHERE job_id=?", (time.time(), row['job_id']))
+        job_id = row['job_id']
+        folder = self.root / 'outputs' / job_id
+        try:
+            result = Path(runner(json.loads(row['spec']), folder, lambda message: self.log(job_id, message))).resolve()
+            if not result.is_relative_to(folder) or not result.is_file():
+                raise ValueError('修改后的视频路径无效')
+            report = json.loads((folder / result.stem / 'quality-report.json').read_text(encoding='utf-8'))
+            if not report.get('passed') or report.get('sha256') != hashlib.sha256(result.read_bytes()).hexdigest():
+                raise ValueError('修改后的成片未通过实际视频与声音检查')
+            with self.connect() as db:
+                db.execute('UPDATE jobs SET result=?,updated=? WHERE id=?', (result.name, time.time(), job_id))
+                db.execute("UPDATE edits SET state='done',result=?,error=NULL,updated=? WHERE job_id=?",
+                           (result.name, time.time(), job_id))
+        except Exception as exc:
+            error = clean_error(exc)
+            self.log(job_id, '封面或文字导出失败：' + error)
+            with self.connect() as db:
+                db.execute("UPDATE edits SET state='failed',error=?,updated=? WHERE job_id=?",
+                           (error, time.time(), job_id))
+        return True
+
     def run_one(self, runner):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -120,7 +174,28 @@ def generate(spec, folder, log):
     return deliver(plan, folder, spec['width'], spec['height'], catalog=catalog, log=log)
 
 
-def create_app(root=None, token=None, runner=generate, start_worker=True):
+def render_edit(spec, folder, log):
+    import editor
+    import quality
+    folder = Path(folder).resolve()
+    plan = json.loads((folder / 'plan.json').read_text(encoding='utf-8'))
+    original_report = json.loads((folder / 'quality-report.json').read_text(encoding='utf-8'))
+    original = Path(original_report['video']).resolve()
+    if not original.is_relative_to(folder) or not original.is_file():
+        raise ValueError('原始成片不存在，不能修改封面')
+    log('从已选镜头制作 0.5 秒封面和逐镜头文字')
+    video = editor.render_overlay(folder, spec, original)
+    review_folder = folder / video.stem
+    review_folder.mkdir(exist_ok=True)
+    review_plan = {**plan, 'cover_seconds': .5}
+    log('检查修改后的实际画面、配音和音乐')
+    report = quality.review(video, review_plan, review_folder, log=log)
+    if not report['passed']:
+        raise ValueError('修改后的成片检查未通过，请查看质量报告并调整文字')
+    return video
+
+
+def create_app(root=None, token=None, runner=generate, start_worker=True, edit_runner=render_edit):
     token = token or os.environ.get('MIXER_API_TOKEN', '')
     if len(token) < 32 or not token.isascii():
         raise ValueError('MIXER_API_TOKEN 必须是至少 32 字符的随机 ASCII 密钥')
@@ -129,7 +204,7 @@ def create_app(root=None, token=None, runner=generate, start_worker=True):
 
     def work():
         while not stop.is_set():
-            if not jobs.run_one(runner):
+            if not jobs.run_one(runner) and not jobs.run_edit(edit_runner):
                 stop.wait(1)
 
     @asynccontextmanager
@@ -152,7 +227,8 @@ def create_app(root=None, token=None, runner=generate, start_worker=True):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'service': 'hainan-mixer', 'worker_concurrency': 1}
+        return {'status': 'ok', 'service': 'hainan-mixer', 'worker_concurrency': 1,
+                'capabilities': ['cover_editor']}
 
     @app.post('/v1/jobs', status_code=202, dependencies=[Depends(authorize)])
     async def submit(request: Request):
@@ -188,12 +264,55 @@ def create_app(root=None, token=None, runner=generate, start_worker=True):
             result['report_url'] = f'/v1/jobs/{job_id}/report'
         return result
 
+    @app.get('/v1/jobs/{job_id}/edit', dependencies=[Depends(authorize)])
+    def edit_form(job_id: str):
+        import editor
+        if jobs.get(job_id)['state'] != 'done':
+            raise HTTPException(409, '需要先完成原视频制作')
+        folder = jobs.root / 'outputs' / job_id
+        return {'covers': editor.cover_options(folder, job_id),
+                'shots': editor.shot_list(folder), 'edit': jobs.get_edit(job_id)}
+
+    @app.get('/v1/jobs/{job_id}/edit-status', dependencies=[Depends(authorize)])
+    def edit_status(job_id: str):
+        jobs.get(job_id)
+        return jobs.get_edit(job_id)
+
+    @app.post('/v1/jobs/{job_id}/edit', status_code=202, dependencies=[Depends(authorize)])
+    async def submit_edit(job_id: str, request: Request):
+        import editor
+        if jobs.get(job_id)['state'] != 'done':
+            raise HTTPException(409, '需要先完成原视频制作')
+        if request.headers.get('content-type', '').split(';')[0] != 'application/json':
+            raise HTTPException(415, '需要 JSON 请求')
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > 50000:
+                raise HTTPException(413, '文字设置过长')
+        try:
+            spec = editor.validate_edit(json.loads(content), jobs.root / 'outputs' / job_id)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(400, clean_error(exc)) from None
+        return jobs.submit_edit(job_id, spec)
+
+    @app.get('/v1/jobs/{job_id}/covers/{index}', dependencies=[Depends(authorize)])
+    def cover(job_id: str, index: int):
+        import editor
+        if jobs.get(job_id)['state'] != 'done':
+            raise HTTPException(409, '原视频还没完成')
+        options = editor.cover_options(jobs.root / 'outputs' / job_id, job_id)
+        if not 0 <= index < len(options):
+            raise HTTPException(404, '封面候选不存在')
+        return FileResponse(jobs.root / 'outputs' / job_id / options[index]['thumbnail'], media_type='image/jpeg')
+
     @app.get('/v1/jobs/{job_id}/{artifact}', dependencies=[Depends(authorize)])
     def download(job_id: str, artifact: str):
         job = jobs.get(job_id)
         if job['state'] != 'done':
             raise HTTPException(409, '成片尚未通过检查')
-        name = {'video': job['result'], 'report': 'quality-report.json', 'captions': 'captions.srt',
+        report_name = (job['result'][:-4] + '/quality-report.json') if job['result'].startswith('edit-') else 'quality-report.json'
+        name = {'video': job['result'], 'report': report_name, 'captions': 'captions.srt',
                 'plan': 'plan.json', 'cuts': 'cuts.json'}.get(artifact)
         if not name:
             raise HTTPException(404, '文件不存在')

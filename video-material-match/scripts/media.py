@@ -1,7 +1,9 @@
 """Read-only access to source media; derived clips are written to local output."""
 import json
 import math
+import re
 import subprocess
+import unicodedata
 from pathlib import Path
 
 SDR_FLAGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709',
@@ -72,9 +74,17 @@ def srt_time(seconds):
     return f'{ms//3600000:02}:{ms//60000%60:02}:{ms//1000%60:02},{ms%1000:03}'
 
 
+def caption_text(value):
+    value = re.sub(r'(\d+(?:\.\d+)?)\s*[%％]', r'百分之\1', value)
+    value = re.sub(r'(?<=\d)\.(?=\d)', '点', value)
+    value = re.sub(r'(?<=\d)\s*[-–—~～]\s*(?=\d)', '到', value)
+    return re.sub(r'\s+', ' ', ''.join(char for char in value
+        if unicodedata.category(char)[0] not in ('P', 'S'))).strip()
+
+
 def write_srt(scenes, target):
     Path(target).write_text('\n\n'.join(
-        f"{i+1}\n{srt_time(s['start'])} --> {srt_time(s['end'])}\n{s['text']}"
+        f"{i+1}\n{srt_time(s['start'])} --> {srt_time(s['end'])}\n{caption_text(s['text'])}"
         for i, s in enumerate(scenes)) + '\n', encoding='utf-8')
 
 
@@ -132,7 +142,7 @@ def render(plan, output, width=1920, height=1080):
                for s in plan['scenes']]
     write_srt(display, output / 'display.srt')
     caption_style = (f'PlayResX={width},PlayResY={height},FontName=Microsoft YaHei,'
-                     f'FontSize={round(min(width,height)*.048)},Outline=2,MarginV={round(height*.10)}')
+                     f'FontSize={round(min(width,height)*.075)},Outline=3,MarginV={round(height*.16)}')
     run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-f', 'concat',
          '-safe', '1', '-i', 'concat.txt', '-vf',
          f"subtitles=display.srt:force_style='{caption_style}'",

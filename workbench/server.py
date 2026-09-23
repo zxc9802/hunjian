@@ -304,7 +304,8 @@ def create_app(settings=None, nas=None):
         value = read_nas('/health')
         if value.get('status') != 'ok' or value.get('service') != 'hainan-mixer':
             raise HTTPException(502, 'NAS 返回了非预期的服务，请检查地址')
-        return {'connected': True, 'checked_at': time.time(), 'voice_available': voice_path().is_file()}
+        return {'connected': True, 'checked_at': time.time(), 'voice_available': voice_path().is_file(),
+                'cover_editor_available': 'cover_editor' in value.get('capabilities', [])}
 
     @app.get('/api/jobs', dependencies=[Depends(authorize)])
     def list_jobs():
@@ -333,6 +334,56 @@ def create_app(settings=None, nas=None):
             job = store.update(job_id, value['state'], snapshot=sanitized_snapshot(value),
                                error=clean(value['error']) if value.get('error') else None)
         return job
+
+    def finished_nas_id(job_id):
+        job = store.get(job_id)
+        if job['state'] != 'done' or not job['nas_id']:
+            raise HTTPException(409, '请先等待原视频制作完成')
+        return job['nas_id']
+
+    @app.get('/api/jobs/{job_id}/edit', dependencies=[Depends(authorize)])
+    def edit_form(job_id: str):
+        return read_nas('/v1/jobs/' + finished_nas_id(job_id) + '/edit')
+
+    @app.get('/api/jobs/{job_id}/edit-status', dependencies=[Depends(authorize)])
+    def edit_status(job_id: str):
+        return read_nas('/v1/jobs/' + finished_nas_id(job_id) + '/edit-status')
+
+    @app.post('/api/jobs/{job_id}/edit', dependencies=[Depends(authorize)], status_code=202)
+    async def save_edit(job_id: str, request: Request):
+        nas_id = finished_nas_id(job_id)
+        value = await read_json(request)
+        try:
+            with nas.request('POST', '/v1/jobs/' + nas_id + '/edit', json=value) as response:
+                if response.status_code == 202:
+                    return response.json()
+                if response.status_code in (400, 409, 413, 415):
+                    raise HTTPException(response.status_code, clean(response.json().get('detail', '文字设置未被接受')))
+                if response.status_code == 401:
+                    raise HTTPException(502, 'NAS 访问凭据无效，请检查服务端配置')
+                raise HTTPException(502, 'NAS 暂时未能接收封面设置')
+        except (requests.RequestException, ValueError):
+            raise HTTPException(503, '无法确认封面设置是否收到，请用相同设置重试') from None
+
+    @app.get('/api/jobs/{job_id}/covers/{index}', dependencies=[Depends(authorize)])
+    def cover_image(job_id: str, index: int):
+        nas_id = finished_nas_id(job_id)
+        if not 0 <= index < 10:
+            raise HTTPException(404, '封面候选不存在')
+        try:
+            upstream = nas.request('GET', f'/v1/jobs/{nas_id}/covers/{index}', stream=True)
+        except requests.RequestException:
+            raise HTTPException(503, '暂时无法读取封面候选') from None
+        if upstream.status_code != 200:
+            upstream.close()
+            raise HTTPException(502, 'NAS 暂时无法提供封面候选')
+
+        def chunks():
+            try:
+                yield from upstream.iter_content(chunk_size=64 * 1024)
+            finally:
+                upstream.close()
+        return StreamingResponse(chunks(), media_type='image/jpeg')
 
     @app.get('/api/jobs/{job_id}/artifacts/{artifact}', dependencies=[Depends(authorize)])
     def artifact(job_id: str, artifact: str, request: Request, download: bool = False):

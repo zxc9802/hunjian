@@ -12,6 +12,23 @@ from matcher import file_stamp
 
 
 class MediaTimingTests(unittest.TestCase):
+    def test_display_subtitles_are_larger_and_have_no_punctuation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'source.mp4'
+            media.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=144x256:r=25',
+                       '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(source)])
+            plan = {'fps': 25, 'seed': 1, 'scenes': [{'text': '带爸妈来海南过冬，住得很舒服！',
+                'start': 0, 'end': 1, 'match': {'selected': {'path': str(source),
+                'stamp': file_stamp(source), 'source_start': 0,
+                'verified_start': 0, 'verified_end': 1}}}]}
+            media.render(plan, root / 'out', 144, 256)
+            subtitles = (root / 'out/display.srt').read_text(encoding='utf-8')
+            self.assertIn('带爸妈来海南过冬住得很舒服', subtitles)
+            self.assertNotIn('，', subtitles)
+            self.assertNotIn('！', subtitles)
+            self.assertEqual(media.caption_text('25.5-28度，入住率80％！'), '25点5到28度入住率百分之80')
+
     def test_mixed_hdr_sdr_export_is_709_and_sdr_pixels_are_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

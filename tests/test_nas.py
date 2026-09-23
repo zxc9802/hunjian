@@ -28,6 +28,7 @@ class NasTests(unittest.TestCase):
         return self.client.post('/v1/jobs', headers=self.headers, json={'text': '这里可以游泳。', **body})
 
     def test_auth_validation_and_idempotency(self):
+        self.assertIn('cover_editor', self.client.get('/health').json()['capabilities'])
         self.assertEqual(self.client.post('/v1/jobs', json={'text': '测试'}).status_code, 401)
         self.assertEqual(self.submit(emotion_alpha=.9).status_code, 400)
         self.assertEqual(self.submit(emotion_alpha=.81).status_code, 400)
@@ -72,6 +73,60 @@ class NasTests(unittest.TestCase):
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/cuts', headers=self.headers).json(), [{'scene':1}])
         self.assertFalse(jobs.run_one(render))
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/jobs.sqlite3', headers=self.headers).status_code, 404)
+
+    def test_cover_edit_queue_reuses_original_and_delivers_only_reviewed_revision(self):
+        import media
+        self.assertEqual(self.client.post('/v1/jobs/missing/edit', headers=self.headers,
+            json={'cover_index': 0}).status_code, 404)
+        job_id = self.submit().json()['id']
+        self.assertEqual(self.client.post(f'/v1/jobs/{job_id}/edit', headers=self.headers,
+            json={'cover_index': 0}).status_code, 409)
+
+        def original(spec, folder, log):
+            clip = folder / 'clip-001-01.mp4'
+            media.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=128x224:r=25',
+                       '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(clip)])
+            (folder / 'plan.json').write_text(json.dumps({'fps': 25,
+                'scenes': [{'text': '这里可以游泳。', 'start': 0, 'end': 1}]}), encoding='utf-8')
+            (folder / 'cuts.json').write_text(json.dumps([{'scene': 1, 'shot': 1,
+                'used_seconds': 1, 'freeze_seconds': 0}]), encoding='utf-8')
+            (folder / 'quality-report.json').write_text(json.dumps({'passed': True,
+                'video': str(clip.resolve()), 'sha256': hashlib.sha256(clip.read_bytes()).hexdigest()}))
+            return clip
+
+        self.assertTrue(self.app.state.jobs.run_one(original))
+        original_video = self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers).content
+        form = self.client.get(f'/v1/jobs/{job_id}/edit', headers=self.headers)
+        self.assertEqual(form.status_code, 200)
+        self.assertEqual(len(form.json()['covers']), 10)
+        self.assertEqual(len(form.json()['shots']), 1)
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/covers/0', headers=self.headers).status_code, 200)
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/covers/0').status_code, 401)
+        valid = {'cover_index': 0, 'cover_text': '海南过冬',
+                 'titles': [{'white': '带爸妈来海南', 'yellow': '住得很舒服'}]}
+        url = f'/v1/jobs/{job_id}/edit'
+        self.assertEqual(self.client.post(url, headers=self.headers, json={**valid, 'cover_index': 10}).status_code, 400)
+        first = self.client.post(url, headers=self.headers, json=valid)
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(self.client.post(url, headers=self.headers, json=valid).status_code, 202)
+        self.assertEqual(self.client.post(url, headers=self.headers,
+            json={**valid, 'cover_text': '另一张标题'}).status_code, 409)
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers).content, original_video)
+
+        def revised(spec, folder, log):
+            target = folder / 'edit-test.mp4'
+            target.write_bytes(b'reviewed-edited-video')
+            report_dir = folder / target.stem
+            report_dir.mkdir()
+            (report_dir / 'quality-report.json').write_text(json.dumps({'passed': True,
+                'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}))
+            return target
+
+        self.assertTrue(self.app.state.jobs.run_edit(revised))
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/edit-status', headers=self.headers).json()['state'], 'done')
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers).content, b'reviewed-edited-video')
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/report', headers=self.headers).json()['passed'], True)
+        self.assertFalse(self.app.state.jobs.run_edit(revised))
 
     def test_mismatched_quality_report_fails(self):
         job_id = self.submit().json()['id']

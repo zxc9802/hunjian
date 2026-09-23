@@ -4,14 +4,14 @@ const labels = {submitting:'正在提交', uncertain:'等待核对', rejected:'�
 const activeStates = new Set(['queued','running','submitting','uncertain']);
 const terminalStates = new Set(['done','failed','interrupted']);
 const sample = '我认为全中国冬天最舒服的城市就是海南的三亚和陵水，这俩地方冬天气温25-28度，我每年都会带着爸妈来这里过冬，就住在三亚海棠湾的这家高端旅居基地。\n\n我比较喜欢这里的一点，就是爸妈住进来以后基本不用操什么心。住宿、吃饭、水电、网络这些都包含了，每天一日三餐都是自助餐，房间也会定期有人打扫。\n\n平时想活动一下，可以泡温泉、游泳、健身，园区里面每天也有不少同龄人一起散步、聊天、参加活动。这里还有医生全天在岗。\n\n如果你也想带爸妈来海南过冬，评论区扣1，我把价格和地址发给你看看。';
-let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, toastTimer, submitting = false, authenticated = false, requestKey = null, pendingSpec = null;
+let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0;
 const voice = new Audio('/api/reference/voice');
 
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4000); }
 function storageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
 function storageSet(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } }
-function stopTimers() { clearTimeout(pollTimer); clearTimeout(refreshTimer); clearTimeout(healthTimer); }
-function showLogin() { authenticated = false; stopTimers(); voice.pause(); $('video').pause(); $('app').hidden = true; $('loading-view').hidden = true; $('login-view').hidden = false; }
+function stopTimers() { clearTimeout(pollTimer); clearTimeout(refreshTimer); clearTimeout(healthTimer); clearTimeout(editTimer); }
+function showLogin() { authenticated = false; coverEditorAvailable = false; stopTimers(); voice.pause(); $('video').pause(); $('app').hidden = true; $('loading-view').hidden = true; $('login-view').hidden = false; }
 async function api(path, options = {}) {
   let response;
   try { response = await fetch(path, {credentials:'same-origin', ...options, headers:{'Content-Type':'application/json','X-Workbench-Request':'1', ...options.headers}, signal:AbortSignal.timeout(40000)}); }
@@ -22,21 +22,15 @@ async function api(path, options = {}) {
   return value;
 }
 function draftSpec() {
-  const portrait = document.querySelector('input[name=orientation]:checked').value === 'portrait';
-  const short = Number($('resolution').value), long = short === 1080 ? 1920 : 1280;
-  return {text:$('editor').value, emotion_alpha:Number($('emotion').value), width:portrait ? short : long, height:portrait ? long : short};
+  return {text:$('editor').value, emotion_alpha:.8, width:1080, height:1920};
 }
 function setSpec(spec) {
   $('editor').value = spec.text || '';
-  $('emotion').value = spec.emotion_alpha ?? .8;
-  document.querySelector(`input[name=orientation][value=${(spec.width || 1080) < (spec.height || 1920) ? 'portrait' : 'landscape'}]`).checked = true;
-  $('resolution').value = Math.min(spec.width || 1080, spec.height || 1920) === 720 ? '720' : '1080';
-  updateControls();
+  updateControls(spec);
 }
-function updateControls() {
+function updateControls(spec = selected?.spec || draftSpec()) {
   $('counter').value = `${$('editor').value.length} / 6000`;
-  $('emotion-value').value = Number($('emotion').value).toFixed(2);
-  const spec = draftSpec(), portrait = spec.width < spec.height;
+  const portrait = spec.width < spec.height;
   $('preview-format').textContent = `${portrait ? '9:16' : '16:9'} · ${Math.min(spec.width,spec.height)}p`;
   $('preview-frame').classList.toggle('landscape', !portrait);
 }
@@ -49,8 +43,6 @@ function saveDraft() {
 }
 function setReadOnly(readonly) {
   $('editor').readOnly = readonly;
-  ['emotion','resolution'].forEach(id => $(id).disabled = readonly);
-  document.querySelectorAll('input[name=orientation]').forEach(el => el.disabled = readonly);
   $('example').hidden = readonly;
   $('create-actions').hidden = readonly;
   $('job-actions').hidden = !readonly;
@@ -58,6 +50,7 @@ function setReadOnly(readonly) {
 function clearPreview() {
   $('video').pause(); $('video').removeAttribute('src'); $('video').load(); $('video').hidden = true;
   $('preview-empty').hidden = false; $('delivery').hidden = true; $('workflow-note').hidden = false;
+  $('cover-editor').hidden = true; clearTimeout(editTimer);
   $('quality-summary').textContent = ''; $('video-error').textContent = '';
 }
 function newDraft(spec = null) {
@@ -113,6 +106,8 @@ async function checkConnection() {
   try {
     const result = await api('/api/connection'); $('connection').dataset.state = 'online'; $('connection-text').textContent = '素材库已连接';
     $('connection-error').hidden = true; $('voice-preview').disabled = !result.voice_available;
+    coverEditorAvailable = result.cover_editor_available === true;
+    $('open-editor').hidden = !coverEditorAvailable;
     $('voice-preview').title = result.voice_available ? '试听你提供的主音色' : '此环境未配置试听音频';
   } catch (error) {
     $('connection').dataset.state = 'offline'; $('connection-text').textContent = '素材库连接异常';
@@ -149,6 +144,7 @@ function updateJobView(job) {
 async function showDelivery(job) {
   const prefix = `/api/jobs/${encodeURIComponent(job.id)}/artifacts/`;
   $('preview-empty').hidden = true; $('workflow-note').hidden = true; $('video').hidden = false; $('delivery').hidden = false;
+  $('open-editor').hidden = !coverEditorAvailable;
   if ($('video').getAttribute('src') !== prefix + 'video') {
     $('video').src = prefix + 'video'; $('video-error').textContent = '';
     $('download-video').href = prefix + 'video?download=true'; $('download-captions').href = prefix + 'captions?download=true'; $('download-report').href = prefix + 'report';
@@ -158,6 +154,85 @@ async function showDelivery(job) {
       $('quality-summary').textContent = report.passed ? '画面与声音检查通过。详细结论见检查报告。' : '检查报告需人工核对，请先查看报告。';
     } catch (error) { if (selected?.id === job.id) $('quality-summary').textContent = error.message; }
   }
+}
+
+function formatSecond(value) { const n = Math.floor(value); return `${Math.floor(n / 60).toString().padStart(2, '0')}:${(n % 60).toString().padStart(2, '0')}`; }
+function chooseCover(index) {
+  coverIndex = index;
+  $('cover-grid').querySelectorAll('button').forEach(button => button.setAttribute('aria-checked', String(Number(button.dataset.index) === index)));
+}
+function renderCoverEditor(id, form) {
+  const prefix = `/api/jobs/${encodeURIComponent(id)}/`;
+  const saved = form.edit?.spec;
+  $('cover-grid').replaceChildren(); $('shot-editors').replaceChildren();
+  for (const option of form.covers) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'cover-choice';
+    button.dataset.index = option.index; button.setAttribute('role', 'radio');
+    button.setAttribute('aria-label', `封面候选 ${option.index + 1}，画面 ${formatSecond(option.time)}`);
+    const img = document.createElement('img'); img.src = `${prefix}covers/${option.index}`; img.alt = ''; img.loading = 'lazy';
+    const time = document.createElement('span'); time.textContent = formatSecond(option.time);
+    button.append(img, time); button.onclick = () => chooseCover(option.index); $('cover-grid').append(button);
+  }
+  chooseCover(saved?.cover_index ?? 0);
+  $('cover-text').value = saved?.cover_text || '';
+  form.shots.forEach((shot, index) => {
+    const card = document.createElement('div'); card.className = 'shot-card';
+    const heading = document.createElement('div'); heading.className = 'shot-heading';
+    const title = document.createElement('strong'); title.textContent = `镜头 ${index + 1} · ${formatSecond(shot.start)}–${formatSecond(shot.end)}`;
+    const seek = document.createElement('button'); seek.type = 'button'; seek.className = 'text-button'; seek.textContent = '查看画面';
+    seek.onclick = () => { $('video').currentTime = Math.min(shot.start + .2, shot.end); $('video').scrollIntoView({behavior:'smooth',block:'center'}); };
+    heading.append(title, seek);
+    const context = document.createElement('p'); context.className = 'small muted'; context.textContent = shot.text;
+    const white = document.createElement('input'); white.type = 'text'; white.maxLength = 28; white.placeholder = '上方白字';
+    white.value = saved?.titles?.[index]?.white ?? shot.white; white.setAttribute('aria-label', `镜头 ${index + 1} 上方白字`);
+    const yellow = document.createElement('input'); yellow.type = 'text'; yellow.maxLength = 28; yellow.placeholder = '下方黄字';
+    yellow.value = saved?.titles?.[index]?.yellow ?? shot.yellow; yellow.setAttribute('aria-label', `镜头 ${index + 1} 下方黄字`);
+    const whiteField = document.createElement('label'); whiteField.textContent = '上方白字'; whiteField.append(white);
+    const yellowField = document.createElement('label'); yellowField.textContent = '下方黄字'; yellowField.append(yellow);
+    card.append(heading, context, whiteField, yellowField); $('shot-editors').append(card);
+  });
+}
+async function pollEdit(id) {
+  clearTimeout(editTimer);
+  if (!authenticated || selected?.id !== id || $('cover-editor').hidden) return;
+  try {
+    const state = await api(`/api/jobs/${encodeURIComponent(id)}/edit-status`);
+    if (selected?.id !== id) return;
+    if (state.state === 'queued' || state.state === 'running') {
+      $('edit-message').textContent = state.state === 'queued' ? '封面版已排队，正在等待导出。' : '正在叠加封面与标题，并检查成片。';
+      $('save-edit').disabled = true;
+      editTimer = setTimeout(() => pollEdit(id), 4000);
+    } else if (state.state === 'done') {
+      $('save-edit').disabled = false;
+      $('edit-message').textContent = '封面版已通过检查，可在右侧播放和下载。';
+      const prefix = `/api/jobs/${encodeURIComponent(id)}/artifacts/`;
+      const version = `?v=${encodeURIComponent(state.result || Date.now())}`;
+      $('video').src = prefix + 'video' + version;
+      $('download-video').href = prefix + 'video?download=true&v=' + encodeURIComponent(state.result || Date.now());
+      $('download-report').href = prefix + 'report' + version;
+      $('quality-summary').textContent = '封面版画面与声音检查通过。';
+    } else {
+      $('save-edit').disabled = false;
+      $('edit-message').textContent = state.error || '可以修改文字，再导出封面版。';
+    }
+  } catch (error) {
+    if (selected?.id === id) { $('edit-message').textContent = error.message; editTimer = setTimeout(() => pollEdit(id), 10000); }
+  }
+}
+async function openCoverEditor() {
+  const id = selected?.id; if (!id || selected.state !== 'done') return;
+  $('open-editor').disabled = true;
+  $('cover-editor').hidden = false;
+  $('edit-message').textContent = '正在从已选画面抽取封面候选…';
+  try {
+    const form = await api(`/api/jobs/${encodeURIComponent(id)}/edit`);
+    if (selected?.id !== id) return;
+    renderCoverEditor(id, form);
+    $('edit-message').textContent = '选择一张画面并填写封面大黄字，再逐镜头修改白字和黄字。';
+    $('cover-editor').scrollIntoView({behavior:'smooth',block:'start'});
+    if (['queued','running','done'].includes(form.edit?.state)) pollEdit(id);
+  } catch (error) { if (selected?.id === id) $('edit-message').textContent = error.message; }
+  finally { $('open-editor').disabled = false; }
 }
 async function pollJob(id) {
   clearTimeout(pollTimer);
@@ -208,10 +283,22 @@ $('reconcile').onclick = async () => {
 };
 $('new-job').onclick = () => { newDraft(); closeMobileHistory(); $('editor').focus(); };
 $('mobile-new-job').onclick = $('new-job').onclick;
-$('reuse').onclick = () => { const spec = selected?.spec; if (spec) { newDraft(spec); $('editor').focus(); toast('已沿用文案与设置，修改后可制作新视频。'); } };
+$('reuse').onclick = () => { const spec = selected?.spec; if (spec) { newDraft(spec); $('editor').focus(); toast('已沿用文案，修改后可制作新视频。'); } };
+$('open-editor').onclick = openCoverEditor;
+$('save-edit').onclick = async () => {
+  const id = selected?.id; if (!id) return;
+  const cards = [...$('shot-editors').querySelectorAll('.shot-card')];
+  const spec = {cover_index:coverIndex, cover_text:$('cover-text').value.trim(),
+    titles:cards.map(card => ({white:card.querySelectorAll('input')[0].value.trim(), yellow:card.querySelectorAll('input')[1].value.trim()}))};
+  if (!spec.cover_text || spec.titles.some(title => !title.white || !title.yellow)) {
+    $('edit-message').textContent = '请填写封面大黄字和每个镜头的白字、黄字。'; return;
+  }
+  $('save-edit').disabled = true; $('edit-message').textContent = '正在提交封面设置…';
+  try { await api(`/api/jobs/${encodeURIComponent(id)}/edit`, {method:'POST',body:JSON.stringify(spec)}); if (selected?.id === id) pollEdit(id); }
+  catch (error) { if (selected?.id === id) $('edit-message').textContent = error.message; $('save-edit').disabled = false; }
+};
 $('example').onclick = () => { if ($('editor').value.trim()) { toast('先清空文案，再填入示例，避免覆盖你的内容。'); return; } $('editor').value = sample; saveDraft(); $('editor').focus(); };
-$('editor').addEventListener('input', saveDraft); $('emotion').addEventListener('input', saveDraft);
-$('resolution').addEventListener('change', saveDraft); document.querySelectorAll('input[name=orientation]').forEach(el => el.addEventListener('change', saveDraft));
+$('editor').addEventListener('input', saveDraft);
 $('history-filters').onclick = event => { const button = event.target.closest('button[data-filter]'); if (!button) return; filter = button.dataset.filter; $('history-filters').querySelectorAll('button').forEach(el => el.setAttribute('aria-pressed', String(el === button))); renderHistory(); };
 $('history-toggle').onclick = () => { const open = $('history-panel').classList.toggle('open'); $('history-toggle').setAttribute('aria-expanded', String(open)); };
 $('refresh-history').onclick = refreshHistory; $('connection').onclick = checkConnection;
