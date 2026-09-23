@@ -260,6 +260,28 @@ class NasTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             source_relative(r'C:\secret.mp4', 'Z:\\')
 
+    def test_live_catalog_starts_when_an_indexed_source_was_removed(self):
+        seed, media, target = self.root/'seed', self.root/'media', self.root/'catalog'
+        media.mkdir()
+        (seed/'proxies').mkdir(parents=True)
+        models = Models()
+        catalog = Catalog(seed, {'embedding': models.embed_url, 'llm': models.llm_url,
+                                'chunk_seconds': 8, 'proxy_fps': 1, 'schema': 1})
+        for name, vector in (('kept.mp4', [1, 0, 0]), ('removed.mp4', [0, 1, 0])):
+            source = media/name
+            source.write_bytes(name.encode())
+            proxy = seed/'proxies'/name
+            proxy.write_bytes(b'proxy')
+            catalog.add({'path': 'Z:\\'+name, 'stamp': file_stamp(source), 'start': 0, 'end': 8,
+                         'proxy': 'D:\\old\\proxies\\'+name, 'description': name}, vector)
+        catalog.close()
+        migrate(seed, target, media, 'Z:\\')
+        (media/'removed.mp4').unlink()
+        report = migrate(seed, target, media, 'Z:\\')
+        self.assertEqual(report['clips'], 1)
+        self.assertEqual(report['vectors'], 1)
+        self.assertEqual(report['unavailable_clips'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

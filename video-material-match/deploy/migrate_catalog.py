@@ -37,15 +37,25 @@ def migrate(seed, target, media_root, source_root):
         rows = db.execute('SELECT id,path,stamp,proxy FROM clips').fetchall()
         if not rows:
             raise ValueError('源索引为空')
-        stamps, paths, updates = {}, set(), []
+        stamps, paths, updates, unavailable = {}, set(), [], 0
         for clip_id, source, stamp, proxy in rows:
             relative = source_relative(source, source_root) if fresh else Path(source).relative_to(media_root)
             path = media_root.joinpath(*relative.parts).resolve()
             if not path.is_relative_to(media_root):
                 raise ValueError('素材路径超出挂载目录')
             if path not in stamps:
-                stat = path.stat()
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    if fresh:
+                        raise
+                    stamps[path] = None
+                    unavailable += 1
+                    continue
                 stamps[path] = (stat.st_size, stat.st_mtime_ns)
+            if stamps[path] is None:
+                unavailable += 1
+                continue
             size, mtime = stamps[path]
             old_size, old_mtime = map(int, stamp.split(':'))
             # SMB/Windows FILETIME has 100ns precision; never ignore larger changes.
@@ -78,9 +88,10 @@ def migrate(seed, target, media_root, source_root):
     finally:
         catalog.close()
     index = faiss.read_index(str(target/'vectors.faiss'))
-    if index.ntotal != len(rows):
+    if index.ntotal != len(rows) - unavailable:
         raise ValueError('FAISS 数量与迁移记录不一致')
-    result = {'videos': len(paths), 'clips': len(rows), 'vectors': index.ntotal,
+    result = {'videos': len(paths), 'clips': len(rows) - unavailable, 'vectors': index.ntotal,
+              'unavailable_clips': unavailable,
               'dimension': index.d, 'vector_sha256': before, 'embeddings_recomputed': 0}
     (target/'migration-report.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     print(json.dumps(result), flush=True)
