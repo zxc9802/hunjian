@@ -83,7 +83,10 @@ class WorkbenchTests(unittest.TestCase):
         return self.client.post('/api/jobs', json={**self.spec, **kwargs}, headers=self.headers)
 
     def test_real_page_and_no_credentials_in_public_assets(self):
-        self.assertEqual(self.client.get('/').status_code, 200)
+        page = self.client.get('/')
+        self.assertEqual(page.status_code, 200)
+        self.assertRegex(page.text, r'/static/app.js\?v=[a-f0-9]{12}')
+        self.assertRegex(page.text, r'/static/style.css\?v=[a-f0-9]{12}')
         for path in ('/', '/static/app.js', '/api/session', '/api/connection'):
             response = self.client.get(path)
             self.assertNotIn(self.settings.nas_token, response.text)

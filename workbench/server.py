@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import requests
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -159,6 +159,11 @@ def validate_spec(data):
 def create_app(settings=None, nas=None):
     settings = settings or Settings.from_env()
     store, nas = Store(settings.data_dir), nas or Nas(settings)
+    assets = [ROOT / 'static/style.css', ROOT / 'static/app.js']
+    version = hashlib.sha256(b''.join(path.read_bytes() for path in assets)).hexdigest()[:12]
+    page = (ROOT / 'static/index.html').read_text(encoding='utf-8')
+    page = page.replace('/static/style.css', f'/static/style.css?v={version}')
+    page = page.replace('/static/app.js', f'/static/app.js?v={version}')
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.nas = store, nas
     hostname = urlsplit(settings.public_url).hostname
@@ -256,7 +261,7 @@ def create_app(settings=None, nas=None):
 
     @app.get('/')
     def index():
-        return FileResponse(ROOT / 'static/index.html')
+        return HTMLResponse(page, headers={'Cache-Control': 'no-store'})
 
     @app.get('/health')
     def health():
