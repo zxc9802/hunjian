@@ -381,6 +381,21 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
             return FileResponse(report, filename='quality-report.json')
         if job['state'] != 'done':
             raise HTTPException(409, '成片尚未通过检查')
+        if artifact == 'cover':
+            if not job['result'].startswith('edit-'):
+                raise HTTPException(404, '封面尚未生成')
+            import media
+            folder = jobs.root / 'outputs' / job_id
+            cover = folder / (Path(job['result']).stem + '-cover.png')
+            if not cover.is_file():
+                temporary = folder / (cover.stem + '-' + uuid.uuid4().hex + '.png')
+                try:
+                    media.run(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-ss', '0.12',
+                               '-i', job['result'], '-frames:v', '1', temporary.name], cwd=folder)
+                    temporary.replace(cover)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            return FileResponse(cover, filename='cover.png', media_type='image/png')
         report_name = (job['result'][:-4] + '/quality-report.json') if job['result'].startswith('edit-') else 'quality-report.json'
         name = {'video': job['result'], 'report': report_name, 'captions': 'captions.srt',
                 'plan': 'plan.json', 'cuts': 'cuts.json'}.get(artifact)

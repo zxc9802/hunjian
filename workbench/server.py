@@ -24,7 +24,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import music_library
 
 ROOT = Path(__file__).resolve().parent
-ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'report': ('json', 'application/json'),
+ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'cover': ('png', 'image/png'),
+             'report': ('json', 'application/json'),
              'captions': ('srt', 'application/x-subrip'), 'plan': ('json', 'application/json'),
              'cuts': ('json', 'application/json')}
 TERMINAL = {'done', 'failed', 'interrupted'}
@@ -151,11 +152,37 @@ class Nas:
 
     def request(self, method, path, **kwargs):
         # Private LAN/tailnet requests must not go through workstation HTTP proxies.
-        with requests.Session() as session:
-            session.trust_env = False
-            headers = {'Authorization': 'Bearer ' + self.settings.nas_token, 'Accept-Encoding': 'identity', **kwargs.pop('headers', {})}
-            return session.request(method, self.settings.nas_url + path, headers=headers,
-                                   timeout=(5, 25), allow_redirects=False, **kwargs)
+        session = requests.Session()
+        session.trust_env = False
+        headers = {'Authorization': 'Bearer ' + self.settings.nas_token, 'Accept-Encoding': 'identity', **kwargs.pop('headers', {})}
+        try:
+            response = session.request(method, self.settings.nas_url + path, headers=headers,
+                                       timeout=(5, 25), allow_redirects=False, **kwargs)
+        except Exception:
+            session.close()
+            raise
+        return NasResponse(response, session)
+
+
+class NasResponse:
+    def __init__(self, response, session):
+        self.response = response
+        self.session = session
+
+    def __getattr__(self, name):
+        return getattr(self.response, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self):
+        try:
+            self.response.close()
+        finally:
+            self.session.close()
 
 
 def validate_spec(data):

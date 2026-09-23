@@ -10,7 +10,7 @@ import requests
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from workbench.server import Settings, Store, create_app
+from workbench.server import Nas, Settings, Store, create_app
 
 
 class FakeNas:
@@ -53,6 +53,11 @@ class FakeNas:
             response._content = b'\xff\xd8\xff\xd9'
             response._content_consumed = True
             return response
+        elif path.endswith('/cover'):
+            response.headers['Content-Type'] = 'image/png'
+            response._content = b'cover-frame'
+            response._content_consumed = True
+            return response
         elif method == 'POST':
             key = kwargs['headers']['Idempotency-Key']
             self.tasks.setdefault(key, {'id': 'a' * 32, 'state': self.state})
@@ -88,6 +93,34 @@ class WorkbenchTests(unittest.TestCase):
 
     def submit(self, **kwargs):
         return self.client.post('/api/jobs', json={**self.spec, **kwargs}, headers=self.headers)
+
+    def test_nas_stream_keeps_session_open_until_response_closes(self):
+        class Session:
+            closed = False
+            def request(self, *_args, **_kwargs):
+                return Response(self)
+            def close(self):
+                self.closed = True
+
+        class Response:
+            def __init__(self, session):
+                self.session = session
+            def iter_content(self, _size):
+                self.assert_open()
+                yield b'video'
+            def assert_open(self):
+                if self.session.closed:
+                    raise AssertionError('NAS session closed before video streaming')
+            def close(self):
+                pass
+
+        session = Session()
+        with patch('workbench.server.requests.Session', return_value=session):
+            upstream = Nas(self.settings).request('GET', '/v1/jobs/id/video', stream=True)
+            self.assertFalse(session.closed)
+            self.assertEqual(b''.join(upstream.iter_content(128 * 1024)), b'video')
+            upstream.close()
+            self.assertTrue(session.closed)
 
     def test_real_page_and_no_credentials_in_public_assets(self):
         page = self.client.get('/')
@@ -210,6 +243,7 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(response.content,b'test')
         self.assertEqual(response.headers['content-range'],'bytes 0-3/12')
         self.assertEqual(self.nas.calls[-1][2]['headers']['Range'],'bytes=0-3')
+        self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/cover').content, b'cover-frame')
         self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/private.env').status_code,404)
         self.assertEqual(self.client.get('/api/jobs/unknown/artifacts/video').status_code,404)
 

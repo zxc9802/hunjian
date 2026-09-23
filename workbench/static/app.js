@@ -180,6 +180,7 @@ async function showDelivery(job) {
   const prefix = `/api/jobs/${encodeURIComponent(job.id)}/artifacts/`;
   $('preview-empty').hidden = true; $('workflow-note').hidden = true; $('video').hidden = false; $('delivery').hidden = false;
   $('open-editor').hidden = !coverEditorAvailable;
+  $('download-cover').hidden = true;
   if ($('video').getAttribute('src') !== prefix + 'video') {
     $('video').src = prefix + 'video'; $('video-error').textContent = '';
     $('download-video').href = prefix + 'video?download=true'; $('download-captions').href = prefix + 'captions?download=true'; $('download-report').href = prefix + 'report';
@@ -189,6 +190,13 @@ async function showDelivery(job) {
       $('quality-summary').textContent = report.passed ? '画面与声音检查通过。详细结论见检查报告。' : '检查报告需人工核对，请先查看报告。';
     } catch (error) { if (selected?.id === job.id) $('quality-summary').textContent = error.message; }
   }
+  try {
+    const edit = await api(`/api/jobs/${encodeURIComponent(job.id)}/edit-status`);
+    if (selected?.id === job.id && edit.state === 'done') {
+      $('download-cover').href = prefix + 'cover?download=true&v=' + encodeURIComponent(edit.result);
+      $('download-cover').hidden = false;
+    }
+  } catch (_) { /* The original video remains available without an edited cover. */ }
 }
 
 function formatSecond(value) { const n = Math.floor(value); return `${Math.floor(n / 60).toString().padStart(2, '0')}:${(n % 60).toString().padStart(2, '0')}`; }
@@ -236,6 +244,7 @@ async function pollEdit(id) {
     if (state.state === 'queued' || state.state === 'running') {
       $('edit-message').textContent = state.state === 'queued' ? '封面版已排队，正在等待导出。' : '正在叠加封面与标题，并检查成片。';
       $('save-edit').disabled = true;
+      $('download-cover').hidden = true;
       editTimer = setTimeout(() => pollEdit(id), 4000);
     } else if (state.state === 'done') {
       $('save-edit').disabled = false;
@@ -244,6 +253,8 @@ async function pollEdit(id) {
       const version = `?v=${encodeURIComponent(state.result || Date.now())}`;
       $('video').src = prefix + 'video' + version;
       $('download-video').href = prefix + 'video?download=true&v=' + encodeURIComponent(state.result || Date.now());
+      $('download-cover').href = prefix + 'cover?download=true&v=' + encodeURIComponent(state.result || Date.now());
+      $('download-cover').hidden = false;
       $('download-report').href = prefix + 'report' + version;
       $('quality-summary').textContent = '封面版画面与声音检查通过。';
     } else {

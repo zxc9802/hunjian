@@ -180,6 +180,7 @@ class NasTests(unittest.TestCase):
         self.assertEqual(len(form.json()['shots']), 1)
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/covers/0', headers=self.headers).status_code, 200)
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/covers/0').status_code, 401)
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/cover', headers=self.headers).status_code, 404)
         valid = {'cover_index': 0, 'cover_text': '海南过冬',
                  'titles': [{'white': '带爸妈来海南', 'yellow': '住得很舒服'}]}
         url = f'/v1/jobs/{job_id}/edit'
@@ -204,6 +205,13 @@ class NasTests(unittest.TestCase):
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/edit-status', headers=self.headers).json()['state'], 'done')
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers).content, b'reviewed-edited-video')
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/report', headers=self.headers).json()['passed'], True)
+        def extract_cover(command, cwd):
+            (Path(cwd) / command[-1]).write_bytes(b'cover-frame')
+        with patch('media.run', side_effect=extract_cover):
+            cover = self.client.get(f'/v1/jobs/{job_id}/cover', headers=self.headers)
+        self.assertEqual(cover.status_code, 200)
+        self.assertEqual(cover.content, b'cover-frame')
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/cover', headers=self.headers).content, b'cover-frame')
         self.assertFalse(self.app.state.jobs.run_edit(revised))
 
     def test_mismatched_quality_report_fails(self):
