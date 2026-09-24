@@ -51,9 +51,7 @@ class CoverEditorTests(unittest.TestCase):
         self.assertEqual(editor.validate_edit(valid, self.folder)['cover_index'], 8)
         for wrong in ({**valid, 'cover_index': 10}, {**valid, 'titles': valid['titles'][:1]},
                       {**valid, 'cover_text': 'x' * 100},
-                      {**valid, 'titles': [{'white': '{\\move(0,0)}', 'yellow': 'A'}, valid['titles'][1]]},
-                      {'cover_index': 0, 'cover_text': '海南过冬',
-                       'title': {'white': '固定白字', 'yellow': ''}}):
+                      {**valid, 'titles': [{'white': '{\\move(0,0)}', 'yellow': 'A'}, valid['titles'][1]]}):
             with self.assertRaises(ValueError):
                 editor.validate_edit(wrong, self.folder)
 
@@ -74,17 +72,6 @@ class CoverEditorTests(unittest.TestCase):
         first, second = pixel(.2), pixel(.7)
         self.assertGreater(first[2], first[0] + 80)
         self.assertGreater(second[0], second[2] + 80)
-
-    def test_one_title_stays_on_screen_across_all_shots(self):
-        editor.cover_options(self.folder, 'fixed-job-id')
-        spec = editor.validate_edit({'cover_index': 0, 'cover_text': '海南过冬',
-            'title': {'white': '三亚海棠湾康养旅居', 'yellow': '夫妻连续三年过冬'}}, self.folder)
-        editor.render_overlay(self.folder, spec, self.folder / 'video-music.mp4')
-        events = (self.folder / 'cover-titles.ass').read_text(encoding='utf-8')
-        self.assertEqual(events.count(',White,,'), 1)
-        self.assertEqual(events.count(',Yellow,,'), 1)
-        self.assertIn('Dialogue: 0,0:00:00.50,0:00:02.00,White', events)
-        self.assertIn('Dialogue: 0,0:00:00.50,0:00:02.00,Yellow', events)
 
 
 if __name__ == '__main__':

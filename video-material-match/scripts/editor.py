@@ -67,8 +67,11 @@ def validate_edit(value, folder):
         raise ValueError('封面设置格式无效')
     index, cover, titles = value.get('cover_index'), value.get('cover_text'), value.get('titles')
     options = cover_options(folder, Path(folder).name)
+    shots = shot_list(folder)
     if type(index) is not int or not 0 <= index < len(options):
         raise ValueError('请选择一张封面画面')
+    if not isinstance(titles, list) or len(titles) != len(shots):
+        raise ValueError('每个镜头都需要一组白黄文字')
 
     def checked(text, limit):
         if not isinstance(text, str) or not text.strip() or len(text.strip()) > limit:
@@ -77,23 +80,13 @@ def validate_edit(value, folder):
             raise ValueError('文字含有不支持的控制字符')
         return text.strip()
 
-    cover = checked(cover, 28)
-    if 'title' in value:
-        title = value['title']
-        if not isinstance(title, dict):
-            raise ValueError('整片标题格式无效')
-        return {'cover_index': index, 'cover_text': cover,
-                'title': {'white': checked(title.get('white'), 28),
-                          'yellow': checked(title.get('yellow'), 28)}}
-    if not isinstance(titles, list) or len(titles) != len(shot_list(folder)):
-        raise ValueError('每个镜头都需要一组白黄文字')
     result = []
     for title in titles:
         if not isinstance(title, dict):
             raise ValueError('镜头文字格式无效')
         result.append({'white': checked(title.get('white'), 28),
                        'yellow': checked(title.get('yellow'), 28)})
-    return {'cover_index': index, 'cover_text': cover, 'titles': result}
+    return {'cover_index': index, 'cover_text': checked(cover, 28), 'titles': result}
 
 
 def ass_time(seconds):
@@ -124,19 +117,17 @@ def render_overlay(folder, spec, base_video):
         'Style: Cover,Noto Sans CJK SC,{0},&H0000E5FF,&H0000E5FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,5,0,0,0,1'.format(round(size * 1.1)),
     ]
     lines = [f'Dialogue: 1,{ass_time(0)},{ass_time(.5)},Cover,,0,0,0,,{{\\an5\\pos({width//2},{height//2})}}{ass_line(spec["cover_text"], 12)}']
-    intervals = ([(.5, total, spec['title'])] if 'title' in spec else
-                 [(max(.5, shot['start']), shot['end'], title)
-                  for shot, title in zip(shot_list(folder), spec['titles'])])
-    for start, end, title in intervals:
-        if start >= end:
+    for shot, title in zip(shot_list(folder), spec['titles']):
+        start = max(.5, shot['start'])
+        if start >= shot['end']:
             continue
         white = ass_line(title['white'])
         yellow = ass_line(title['yellow'])
         first_y = round(height * .07)
         second_y = first_y + (white.count(r'\N') + 1) * round(size * 1.15)
         lines.extend([
-            f'Dialogue: 0,{ass_time(start)},{ass_time(end)},White,,0,0,0,,{{\\an8\\pos({width//2},{first_y})}}{white}',
-            f'Dialogue: 0,{ass_time(start)},{ass_time(end)},Yellow,,0,0,0,,{{\\an8\\pos({width//2},{second_y})}}{yellow}',
+            f'Dialogue: 0,{ass_time(start)},{ass_time(shot["end"])},White,,0,0,0,,{{\\an8\\pos({width//2},{first_y})}}{white}',
+            f'Dialogue: 0,{ass_time(start)},{ass_time(shot["end"])},Yellow,,0,0,0,,{{\\an8\\pos({width//2},{second_y})}}{yellow}',
         ])
     ass = folder / 'cover-titles.ass'
     ass.write_text('[Script Info]\nScriptType: v4.00+\nPlayResX: {0}\nPlayResY: {1}\n'

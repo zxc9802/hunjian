@@ -4,7 +4,7 @@ const labels = {submitting:'正在提交', uncertain:'等待核对', rejected:'�
 const activeStates = new Set(['queued','running','submitting','uncertain']);
 const terminalStates = new Set(['done','failed','interrupted']);
 const sample = '我认为全中国冬天最舒服的城市就是海南的三亚和陵水，这俩地方冬天气温25-28度，我每年都会带着爸妈来这里过冬，就住在三亚海棠湾的这家高端旅居基地。\n\n我比较喜欢这里的一点，就是爸妈住进来以后基本不用操什么心。住宿、吃饭、水电、网络这些都包含了，每天一日三餐都是自助餐，房间也会定期有人打扫。\n\n平时想活动一下，可以泡温泉、游泳、健身，园区里面每天也有不少同龄人一起散步、聊天、参加活动。这里还有医生全天在岗。\n\n如果你也想带爸妈来海南过冬，评论区扣1，我把价格和地址发给你看看。';
-let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0, musicSelection = '';
+let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0, editShotCount = 0, musicSelection = '';
 const voice = new Audio('/api/reference/voice');
 
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4000); }
@@ -207,6 +207,7 @@ function chooseCover(index) {
 function renderCoverEditor(id, form) {
   const prefix = `/api/jobs/${encodeURIComponent(id)}/`;
   const saved = form.edit?.spec;
+  editShotCount = form.shots.length;
   $('cover-grid').replaceChildren();
   for (const option of form.covers) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'cover-choice';
@@ -218,8 +219,8 @@ function renderCoverEditor(id, form) {
   }
   chooseCover(saved?.cover_index ?? 0);
   $('cover-text').value = saved?.cover_text || '';
-  $('title-white').value = saved?.title?.white ?? saved?.titles?.[0]?.white ?? '';
-  $('title-yellow').value = saved?.title?.yellow ?? saved?.titles?.[0]?.yellow ?? '';
+  $('title-white').value = saved?.titles?.[0]?.white ?? '';
+  $('title-yellow').value = saved?.titles?.[0]?.yellow ?? '';
 }
 async function pollEdit(id) {
   clearTimeout(editTimer);
@@ -345,9 +346,10 @@ $('reuse').onclick = () => { const spec = selected?.spec; if (spec) { newDraft(s
 $('open-editor').onclick = openCoverEditor;
 $('save-edit').onclick = async () => {
   const id = selected?.id; if (!id) return;
+  const title = {white:$('title-white').value.trim(), yellow:$('title-yellow').value.trim()};
   const spec = {cover_index:coverIndex, cover_text:$('cover-text').value.trim(),
-    title:{white:$('title-white').value.trim(), yellow:$('title-yellow').value.trim()}};
-  if (!spec.cover_text || !spec.title.white || !spec.title.yellow) {
+    titles:Array.from({length:editShotCount}, () => ({...title}))};
+  if (!spec.cover_text || !title.white || !title.yellow) {
     $('edit-message').textContent = '请填写封面大黄字和整片固定的白字、黄字。'; return;
   }
   $('save-edit').disabled = true; $('edit-message').textContent = '正在提交封面设置…';
