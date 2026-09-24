@@ -83,13 +83,16 @@
           </form>
           <div id="job-actions" class="job-actions" hidden><button id="reuse" class="button quiet"><svg class="icon"><use href="#i-copy"/></svg>沿用文案新建</button><button id="reconcile" class="button primary" hidden>核对提交</button><button id="resume" class="button primary" hidden>从保存进度继续</button></div>
           <section id="cover-editor" class="cover-editor" hidden aria-labelledby="cover-editor-heading">
-            <div class="section-line"><h2 id="cover-editor-heading">封面与镜头文字</h2><span class="small muted">从成片中挑选画面</span></div>
-            <p class="small muted">封面只出现 0.5 秒。后面的每个镜头都能分别设置上白下黄两行字。</p>
+            <div class="section-line"><h2 id="cover-editor-heading">封面与整片标题</h2><span class="small muted">从成片中挑选画面</span></div>
+            <p class="small muted">封面只出现 0.5 秒。上方白字和黄字填写一次，在后续整条视频中保持不变；下方口播字幕仍随配音变化。</p>
             <div id="cover-grid" class="cover-grid" role="radiogroup" aria-label="选择封面画面"></div>
             <label for="cover-text">封面中间的大黄字</label>
             <textarea id="cover-text" maxlength="28" rows="2" placeholder="例如：带爸妈来海南过冬"></textarea>
-            <h3>逐镜头标题</h3>
-            <div id="shot-editors" class="shot-editors"></div>
+            <h3>整片固定标题</h3>
+            <div class="fixed-title-fields">
+              <label for="title-white">上方白字<input id="title-white" type="text" maxlength="28" placeholder="例如：三亚海棠湾康养旅居"></label>
+              <label for="title-yellow">下方黄字<input id="title-yellow" type="text" maxlength="28" placeholder="例如：夫妻连续三年过冬"></label>
+            </div>
             <p id="edit-message" class="small muted" role="status"></p>
             <button id="save-edit" type="button" class="button primary">导出封面版成片 <svg class="icon"><use href="#i-arrow"/></svg></button>
           </section>

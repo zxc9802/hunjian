@@ -207,7 +207,7 @@ function chooseCover(index) {
 function renderCoverEditor(id, form) {
   const prefix = `/api/jobs/${encodeURIComponent(id)}/`;
   const saved = form.edit?.spec;
-  $('cover-grid').replaceChildren(); $('shot-editors').replaceChildren();
+  $('cover-grid').replaceChildren();
   for (const option of form.covers) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'cover-choice';
     button.dataset.index = option.index; button.setAttribute('role', 'radio');
@@ -218,22 +218,8 @@ function renderCoverEditor(id, form) {
   }
   chooseCover(saved?.cover_index ?? 0);
   $('cover-text').value = saved?.cover_text || '';
-  form.shots.forEach((shot, index) => {
-    const card = document.createElement('div'); card.className = 'shot-card';
-    const heading = document.createElement('div'); heading.className = 'shot-heading';
-    const title = document.createElement('strong'); title.textContent = `镜头 ${index + 1} · ${formatSecond(shot.start)}–${formatSecond(shot.end)}`;
-    const seek = document.createElement('button'); seek.type = 'button'; seek.className = 'text-button'; seek.textContent = '查看画面';
-    seek.onclick = () => { $('video').currentTime = Math.min(shot.start + .2, shot.end); $('video').scrollIntoView({behavior:'smooth',block:'center'}); };
-    heading.append(title, seek);
-    const context = document.createElement('p'); context.className = 'small muted'; context.textContent = shot.text;
-    const white = document.createElement('input'); white.type = 'text'; white.maxLength = 28; white.placeholder = '上方白字';
-    white.value = saved?.titles?.[index]?.white ?? shot.white; white.setAttribute('aria-label', `镜头 ${index + 1} 上方白字`);
-    const yellow = document.createElement('input'); yellow.type = 'text'; yellow.maxLength = 28; yellow.placeholder = '下方黄字';
-    yellow.value = saved?.titles?.[index]?.yellow ?? shot.yellow; yellow.setAttribute('aria-label', `镜头 ${index + 1} 下方黄字`);
-    const whiteField = document.createElement('label'); whiteField.textContent = '上方白字'; whiteField.append(white);
-    const yellowField = document.createElement('label'); yellowField.textContent = '下方黄字'; yellowField.append(yellow);
-    card.append(heading, context, whiteField, yellowField); $('shot-editors').append(card);
-  });
+  $('title-white').value = saved?.title?.white ?? saved?.titles?.[0]?.white ?? '';
+  $('title-yellow').value = saved?.title?.yellow ?? saved?.titles?.[0]?.yellow ?? '';
 }
 async function pollEdit(id) {
   clearTimeout(editTimer);
@@ -274,7 +260,7 @@ async function openCoverEditor() {
     const form = await api(`/api/jobs/${encodeURIComponent(id)}/edit`);
     if (selected?.id !== id) return;
     renderCoverEditor(id, form);
-    $('edit-message').textContent = '选择一张画面并填写封面大黄字，再逐镜头修改白字和黄字。';
+    $('edit-message').textContent = '选择封面画面，填写封面大黄字和整片固定标题。';
     $('cover-editor').scrollIntoView({behavior:'smooth',block:'start'});
     if (['queued','running','done'].includes(form.edit?.state)) pollEdit(id);
   } catch (error) { if (selected?.id === id) $('edit-message').textContent = error.message; }
@@ -359,11 +345,10 @@ $('reuse').onclick = () => { const spec = selected?.spec; if (spec) { newDraft(s
 $('open-editor').onclick = openCoverEditor;
 $('save-edit').onclick = async () => {
   const id = selected?.id; if (!id) return;
-  const cards = [...$('shot-editors').querySelectorAll('.shot-card')];
   const spec = {cover_index:coverIndex, cover_text:$('cover-text').value.trim(),
-    titles:cards.map(card => ({white:card.querySelectorAll('input')[0].value.trim(), yellow:card.querySelectorAll('input')[1].value.trim()}))};
-  if (!spec.cover_text || spec.titles.some(title => !title.white || !title.yellow)) {
-    $('edit-message').textContent = '请填写封面大黄字和每个镜头的白字、黄字。'; return;
+    title:{white:$('title-white').value.trim(), yellow:$('title-yellow').value.trim()}};
+  if (!spec.cover_text || !spec.title.white || !spec.title.yellow) {
+    $('edit-message').textContent = '请填写封面大黄字和整片固定的白字、黄字。'; return;
   }
   $('save-edit').disabled = true; $('edit-message').textContent = '正在提交封面设置…';
   try { await api(`/api/jobs/${encodeURIComponent(id)}/edit`, {method:'POST',body:JSON.stringify(spec)}); if (selected?.id === id) pollEdit(id); }

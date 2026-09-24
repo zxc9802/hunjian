@@ -45,7 +45,7 @@
 - `GET /v1/jobs/{id}/captions`：按实际配音时间轴生成的字幕。
 - `GET /v1/jobs/{id}/plan`、`GET /v1/jobs/{id}/cuts`：制作计划与实际镜头裁切记录。
 - `GET /v1/jobs/{id}/edit`：成片完成后返回从真实镜头抽取的 10 张封面候选、逐镜头时间轴与已有文字设置；候选图片从 `GET /v1/jobs/{id}/covers/{index}` 读取。
-- `POST /v1/jobs/{id}/edit`：提交 `cover_index`（0–9）、`cover_text` 和与镜头数量一致的 `titles` 数组，每项含非空 `white`、`yellow`。封面静帧只占前 0.5 秒；每个后续镜头显示独立的上白下黄标题。重复提交同一设置不会重复导出。
+- `POST /v1/jobs/{id}/edit`：提交 `cover_index`（0–9）、`cover_text` 和一组整片固定的 `title`，其中 `white`、`yellow` 均不能为空。封面静帧只占前 0.5 秒；其后上白下黄标题持续显示到结尾，下方口播字幕继续同步变化。旧版逐镜头 `titles` 请求仍可用于已有任务。重复提交同一设置不会重复导出。
 - `GET /v1/jobs/{id}/edit-status`：查询封面版 `queued`、`running`、`done`、`failed` 状态。只有新版成片实际通过 Gemini 3.7 Flash 画面与声音复查且报告 SHA256 匹配，原 `/video` 和 `/report` 才切换至新版；失败时原版继续可用。
 
 上限为 20 个等待或运行中的任务，单条文案 1–6000 字符。情绪范围和步长由服务端验证。质量检查失败不会把中间视频作为成功成片开放下载。

@@ -420,7 +420,7 @@ class WorkbenchTests(unittest.TestCase):
         self.client.get('/api/jobs/test-request-001')
         self.assertEqual(len(self.client.get(url).json()['covers']), 10)
         body = {'cover_index': 0, 'cover_text': '海南过冬',
-                'titles': [{'white': '带爸妈过冬', 'yellow': '住得舒服'}]}
+                'title': {'white': '带爸妈过冬', 'yellow': '住得舒服'}}
         self.assertEqual(self.client.post(url, json=body, headers=self.headers).status_code, 202)
         self.assertEqual(self.nas.calls[-1][2]['json'], body)
         self.assertEqual(self.client.get(url + '-status').json()['state'], 'done')
