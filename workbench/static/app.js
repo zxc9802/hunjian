@@ -80,7 +80,7 @@ function setReadOnly(readonly) {
 }
 function clearPreview() {
   if (editDraftTimer) { clearTimeout(editDraftTimer); void persistEditDraft(); }
-  $('video').pause(); $('video').removeAttribute('src'); $('video').load(); $('video').hidden = true;
+  $('video').pause(); $('video').removeAttribute('src'); $('video').removeAttribute('poster'); $('video').load(); $('video').hidden = true;
   $('preview-empty').hidden = false; $('delivery').hidden = true; $('workflow-note').hidden = false;
   $('cover-editor').hidden = true; clearTimeout(editTimer);
   $('live-overlay').hidden = true; editDraftJobId = null; exportedEditSpec = null; renderingEditSpec = null; editRunning = false; downloadAfterEdit = false;
@@ -212,7 +212,7 @@ function updateEditActions() {
 }
 function updateLiveOverlay() {
   if ($('live-overlay').hidden) return;
-  const cover = $('video').currentTime < .5;
+  const cover = $('video').paused ? document.activeElement === $('cover-text') : $('video').currentTime < .5;
   $('live-cover').hidden = !cover;
   $('live-title').hidden = cover;
   $('live-cover-text').textContent = $('cover-text').value.trim();
@@ -437,7 +437,10 @@ $('download-cover').onclick = event => {
   if ($('cover-editor').hidden || !editChanged()) return;
   event.preventDefault(); $('edit-message').textContent = '封面文字有新修改，请先下载更新后的成片。';
 };
-for (const id of ['cover-text','title-white','title-yellow']) $(id).addEventListener('input', onEditInput);
+for (const id of ['cover-text','title-white','title-yellow']) {
+  $(id).addEventListener('input', onEditInput);
+  $(id).addEventListener('focus', updateLiveOverlay);
+}
 $('video').addEventListener('timeupdate', updateLiveOverlay);
 $('example').onclick = () => { if ($('editor').value.trim()) { toast('先清空文案，再填入示例，避免覆盖你的内容。'); return; } $('editor').value = sample; saveDraft(); $('editor').focus(); };
 $('editor').addEventListener('input', saveDraft);
@@ -447,7 +450,14 @@ $('refresh-history').onclick = refreshHistory; $('connection').onclick = checkCo
 $('voice-preview').onclick = async () => { if (!voice.paused) { voice.pause(); return; } try { await voice.play(); } catch { toast('试听音频暂时无法播放，请稍后重试。'); } };
 function voiceLabel() { $('voice-preview').querySelector('span').textContent = voice.paused ? '试听音色' : '停止试听'; }
 voice.onplay = () => { pauseMusic(); $('video').pause(); voiceLabel(); }; voice.onpause = voiceLabel; voice.onended = voiceLabel;
-$('video').addEventListener('error', () => { if ($('video').getAttribute('src')) $('video-error').textContent = '视频加载失败，请检查素材库连接后刷新此任务。'; });
+$('video').addEventListener('error', () => {
+  const source = $('video').getAttribute('src') || '';
+  if (source.endsWith('/artifacts/source-preview')) {
+    $('video').src = source.replace('source-preview', 'source-video');
+    return;
+  }
+  if (source) $('video-error').textContent = editDraftJobId ? '动态画面暂未载入，封面和文字仍可即时预览。' : '视频加载失败，请检查素材库连接后刷新此任务。';
+});
 $('video').addEventListener('play', () => { pauseMusic(); voice.pause(); });
 $('login-form').onsubmit = async event => {
   event.preventDefault(); $('login-button').disabled = true; $('login-error').textContent = '';
