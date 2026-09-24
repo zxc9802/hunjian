@@ -72,7 +72,7 @@ class FakeNas:
             if self.drop_reply:
                 self.drop_reply = False
                 raise requests.Timeout('upstream accepted but reply lost')
-        elif path.endswith(('/video', '/source-video')):
+        elif path.endswith(('/video', '/source-video', '/source-preview')):
             response.status_code = 206
             response.headers.update({'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-3/12', 'Content-Length': '4', 'Accept-Ranges': 'bytes'})
             response._content = b'test'
@@ -293,11 +293,26 @@ class WorkbenchTests(unittest.TestCase):
                                  headers={'Range': 'bytes=0-11'})
         self.assertEqual(ranged.status_code, 206)
         self.assertEqual(ranged.content, video[:12])
-        original = self.client.get('/api/jobs/test-request-001/artifacts/source-preview',
+        original = self.client.get('/api/jobs/test-request-001/artifacts/source-video',
                                    headers={'Range': 'bytes=0-11'})
         self.assertEqual(original.status_code, 206)
         self.assertEqual(original.content, video[:12])
         self.assertFalse(any(path.endswith('/video') for _, path, _ in self.nas.calls))
+
+    def test_source_preview_uses_compact_nas_stream_even_with_cos_original(self):
+        self.nas.cos_key = 'video-jobs/' + 'a' * 32 + '/' + '0' * 64 + '.mp4'
+        self.nas.source_cos_key = self.nas.cos_key
+        self.submit()
+        self.nas.state = 'done'
+        self.client.get('/api/jobs/test-request-001')
+        with patch('workbench.music_library.client') as cos:
+            response = self.client.get('/api/jobs/test-request-001/artifacts/source-preview',
+                                       headers={'Range': 'bytes=0-3'})
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(response.content, b'test')
+            cos.assert_not_called()
+        self.assertEqual(self.nas.calls[-1][1], '/v1/jobs/' + 'a' * 32 + '/source-preview')
+        self.assertEqual(self.nas.calls[-1][2]['headers']['Range'], 'bytes=0-3')
 
     def test_completed_edit_changes_cos_video_without_changing_original(self):
         original = b'\x00\x00\x00\x18ftypmp42' + b'o' * 128

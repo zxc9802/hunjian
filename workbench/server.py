@@ -639,7 +639,7 @@ def create_app(settings=None, nas=None):
         job = store.get(job_id)
         if not job['nas_id'] or (job['state'] != 'done' and artifact != 'report'):
             raise HTTPException(409, '成片尚未通过检查')
-        if artifact in ('video', 'source-video', 'source-preview') and not job['snapshot'].get(
+        if artifact in ('video', 'source-video') and not job['snapshot'].get(
                 'cos_key' if artifact == 'video' else 'source_cos_key'):
             try:
                 current = read_nas('/v1/jobs/' + job['nas_id'])
@@ -648,7 +648,7 @@ def create_app(settings=None, nas=None):
             except HTTPException:
                 pass
         key = job['snapshot'].get('cos_key' if artifact == 'video' else 'source_cos_key')
-        if artifact in ('video', 'source-video', 'source-preview') and key:
+        if artifact in ('video', 'source-video') and key:
             target = cached_cos_video(job, key)
             return FileResponse(target, media_type='video/mp4',
                                 filename=f'hainan-{job_id[:12]}-{artifact}.mp4',
