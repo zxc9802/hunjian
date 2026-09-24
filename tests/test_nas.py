@@ -192,6 +192,11 @@ class NasTests(unittest.TestCase):
         response = self.client.get(f'/v1/jobs/{job_id}/source-video', headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b'original video')
+        (folder / 'source-preview.mp4').write_bytes(b'preview video')
+        preview = self.client.get(f'/v1/jobs/{job_id}/source-preview',
+                                  headers={**self.headers, 'Range': 'bytes=0-6'})
+        self.assertEqual(preview.status_code, 206)
+        self.assertEqual(preview.content, b'preview')
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers).content, b'edited video')
 
     def test_cover_edit_queue_reuses_original_and_delivers_only_reviewed_revision(self):

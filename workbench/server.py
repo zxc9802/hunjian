@@ -24,7 +24,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import music_library
 
 ROOT = Path(__file__).resolve().parent
-ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'source-video': ('mp4', 'video/mp4'), 'cover': ('png', 'image/png'),
+ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'source-video': ('mp4', 'video/mp4'),
+             'source-preview': ('mp4', 'video/mp4'), 'cover': ('png', 'image/png'),
              'report': ('json', 'application/json'),
              'captions': ('srt', 'application/x-subrip'), 'plan': ('json', 'application/json'),
              'cuts': ('json', 'application/json')}
@@ -169,7 +170,7 @@ class Nas:
         headers = {'Authorization': 'Bearer ' + self.settings.nas_token, 'Accept-Encoding': 'identity', **kwargs.pop('headers', {})}
         try:
             response = session.request(method, self.settings.nas_url + path, headers=headers,
-                                       timeout=(5, 25), allow_redirects=False, **kwargs)
+                                       timeout=kwargs.pop('timeout', (5, 25)), allow_redirects=False, **kwargs)
         except Exception:
             session.close()
             raise
@@ -613,7 +614,8 @@ def create_app(settings=None, nas=None):
             if request.headers.get(header):
                 headers[header] = request.headers[header]
         try:
-            upstream = nas.request('GET', '/v1/jobs/' + job['nas_id'] + '/' + artifact, headers=headers, stream=True)
+            upstream = nas.request('GET', '/v1/jobs/' + job['nas_id'] + '/' + artifact, headers=headers,
+                                   stream=True, timeout=(5, 120) if artifact == 'source-preview' else (5, 25))
         except requests.RequestException:
             raise HTTPException(503, '无法读取成片，请检查 NAS 连接后重试') from None
         if upstream.status_code == 404 and artifact == 'report':

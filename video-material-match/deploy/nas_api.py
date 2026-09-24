@@ -246,6 +246,30 @@ def render_edit(spec, folder, log):
     return video
 
 
+preview_lock = threading.Lock()
+
+
+def source_preview(source, folder):
+    import media
+    preview = folder / 'source-preview.mp4'
+    if preview.is_file():
+        return preview
+    with preview_lock:
+        if preview.is_file():
+            return preview
+        temporary = folder / ('source-preview-' + uuid.uuid4().hex + '.mp4')
+        try:
+            media.run(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-i', str(source),
+                       '-vf', 'scale=360:-2,fps=12', '-c:v', 'libx264', '-preset', 'veryfast',
+                       '-crf', '34', '-maxrate', '250k', '-bufsize', '500k', '-pix_fmt', 'yuv420p',
+                       '-c:a', 'aac', '-b:a', '48k', '-ac', '1', '-movflags', '+faststart',
+                       str(temporary)])
+            temporary.replace(preview)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return preview
+
+
 def create_app(root=None, token=None, runner=generate, start_worker=True, edit_runner=render_edit):
     token = token or os.environ.get('MIXER_API_TOKEN', '')
     if len(token) < 32 or not token.isascii():
@@ -396,13 +420,15 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
                 finally:
                     temporary.unlink(missing_ok=True)
             return FileResponse(cover, filename='cover.png', media_type='image/png')
-        if artifact == 'source-video':
+        if artifact in ('source-video', 'source-preview'):
             folder = (jobs.root / 'outputs' / job_id).resolve()
             report = json.loads((folder / 'quality-report.json').read_text(encoding='utf-8'))
             source = Path(report['video']).resolve()
             if not report.get('passed') or not source.is_relative_to(folder) or not source.is_file():
                 raise HTTPException(404, '原始成片不存在')
-            return FileResponse(source, filename='source-video.mp4', media_type='video/mp4')
+            if artifact == 'source-preview':
+                source = source_preview(source, folder)
+            return FileResponse(source, filename=artifact + '.mp4', media_type='video/mp4')
         report_name = (job['result'][:-4] + '/quality-report.json') if job['result'].startswith('edit-') else 'quality-report.json'
         name = {'video': job['result'], 'report': report_name, 'captions': 'captions.srt',
                 'plan': 'plan.json', 'cuts': 'cuts.json'}.get(artifact)

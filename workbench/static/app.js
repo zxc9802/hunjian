@@ -232,7 +232,6 @@ async function persistEditDraft() {
 }
 function onEditInput() {
   if (!editDraftJobId || editRunning) return;
-  if ($('video').currentTime < .5 && $('video').readyState) $('video').currentTime = .6;
   updateLiveOverlay(); updateEditActions();
   $('edit-message').textContent = '预览已更新，文字会自动保存；下载时才生成新成片。';
   clearTimeout(editDraftTimer); editDraftTimer = setTimeout(persistEditDraft, 500);
@@ -244,6 +243,7 @@ function setEditInputsDisabled(disabled) {
 function chooseCover(index) {
   coverIndex = index;
   $('cover-grid').querySelectorAll('button').forEach(button => button.setAttribute('aria-checked', String(Number(button.dataset.index) === index)));
+  if (editDraftJobId || selected?.id) $('video').poster = `/api/jobs/${encodeURIComponent(editDraftJobId || selected.id)}/covers/${index}`;
   if (editDraftJobId) onEditInput();
 }
 function renderCoverEditor(id, form) {
@@ -272,8 +272,8 @@ function renderCoverEditor(id, form) {
   editDraftJobId = id;
   setEditInputsDisabled(editRunning);
   updateEditActions();
-  $('video').pause(); $('video-error').textContent = ''; $('video').src = prefix + 'artifacts/source-video';
-  $('video').onloadedmetadata = () => { if (editDraftJobId === id) { $('video-error').textContent = ''; $('video').currentTime = Math.min(.6, Math.max(0, $('video').duration - .1)); updateLiveOverlay(); } };
+  $('video').pause(); $('video-error').textContent = ''; $('video').src = prefix + 'artifacts/source-preview';
+  $('video').onloadedmetadata = () => { if (editDraftJobId === id) { $('video-error').textContent = ''; updateLiveOverlay(); } };
   $('live-overlay').hidden = false;
   updateLiveOverlay();
 }
