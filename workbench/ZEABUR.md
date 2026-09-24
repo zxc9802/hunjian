@@ -29,7 +29,7 @@ Zeabur 官方说明：[Dockerfile 部署](https://zeabur.com/docs/en-US/deploy/m
 
 `WORKBENCH_DOMAIN` 只供 Compose 中的 Caddy 使用；Zeabur 模式应直接设置 `PUBLIC_URL`。缺少有效的 NAS 配置或登录配置时程序会拒绝启动，不能通过删除校验来绕过。
 
-工作台音乐库使用私有桶 `hunjian-1410143389`、新加坡地域 `ap-singapore`。用户登录后上传 MP3、WAV 或 M4A（单文件上限 100 MB），页面列出已上传曲目，每首支持试听、暂停和拖动进度，并可在创建任务时选择。试听通过登录保护的工作台接口读取私有桶。NAS 的 `private/runtime.env` 也必须设置相同的两个 `COS_SECRET_*` 变量，才能按任务曲目从 COS 下载；不上传或不选曲时可正常制作，保留口播，不添加背景音乐。不再需要音乐生成服务或其密钥。请给这组 COS 密钥仅授予该桶音乐库前缀所需的列出、上传与下载权限。本次功能更新需要同时部署工作台和 NAS 服务。
+工作台音乐库和成片使用私有桶 `hunjian-1410143389`、新加坡地域 `ap-singapore`。用户登录后上传 MP3、WAV 或 M4A（单文件上限 100 MB），页面列出已上传曲目，每首支持试听、暂停和拖动进度，并可在创建任务时选择。试听通过登录保护的工作台接口读取私有桶。NAS 的 `private/runtime.env` 也必须设置相同的两个 `COS_SECRET_*` 变量；质检通过的成片和文字导出新版会上传到 `video-jobs/`，上传成功后任务才显示完成。工作台从 COS 下载并校验到持久化 `/data/artifacts` 缓存，再向浏览器提供预览和下载。请给 COS 密钥授予该桶 `music-library/` 和 `video-jobs/` 前缀所需的读写权限。本次功能更新需要同时部署工作台和 NAS 服务。
 
 ## 任务数据与 NAS 连接
 

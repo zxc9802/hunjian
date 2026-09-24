@@ -16,17 +16,23 @@ from fastapi.responses import FileResponse
 
 from api import clean_error
 from local_ui import validate_request
+from video_storage import upload_video
 
 
 class Jobs:
-    def __init__(self, root):
+    def __init__(self, root, video_publisher=upload_video):
         self.root = Path(root).resolve()
+        self.video_publisher = video_publisher
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / 'jobs.sqlite3'
         with self.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, request_key TEXT UNIQUE, spec TEXT,
                 state TEXT, created REAL, updated REAL, logs TEXT, result TEXT, error TEXT)''')
+            if 'cos_key' not in {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}:
+                db.execute('ALTER TABLE jobs ADD COLUMN cos_key TEXT')
+            if 'source_cos_key' not in {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}:
+                db.execute('ALTER TABLE jobs ADD COLUMN source_cos_key TEXT')
             db.execute('''CREATE TABLE IF NOT EXISTS edits (
                 job_id TEXT PRIMARY KEY, spec TEXT NOT NULL, state TEXT NOT NULL,
                 updated REAL NOT NULL, result TEXT, error TEXT)''')
@@ -59,7 +65,7 @@ class Jobs:
                 raise HTTPException(429, '任务队列已满，请稍后再试')
             job_id = uuid.uuid4().hex
             now = time.time()
-            db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?)',
+            db.execute('INSERT INTO jobs (id,request_key,spec,state,created,updated,logs,result,error) VALUES (?,?,?,?,?,?,?,?,?)',
                        (job_id, key, encoded, 'queued', now, now, '[]', None, None))
             return job_id
 
@@ -133,28 +139,37 @@ class Jobs:
                 raise HTTPException(409, '上一版文字仍在导出，请等待完成')
             if not previous or previous['spec'] != encoded or previous['state'] in ('failed', 'interrupted'):
                 db.execute('INSERT INTO edits VALUES (?,?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET '
-                           'spec=excluded.spec,state=excluded.state,updated=excluded.updated,result=NULL,error=NULL',
+                           'spec=excluded.spec,state=excluded.state,updated=excluded.updated,'
+                           'result=CASE WHEN edits.spec=excluded.spec THEN edits.result ELSE NULL END,error=NULL',
                            (job_id, encoded, 'queued', time.time(), None, None))
         return self.get_edit(job_id)
 
     def run_edit(self, runner):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute("SELECT job_id,spec FROM edits WHERE state='queued' ORDER BY updated LIMIT 1").fetchone()
+            row = db.execute("SELECT job_id,spec,result FROM edits WHERE state='queued' ORDER BY updated LIMIT 1").fetchone()
             if not row:
                 return False
             db.execute("UPDATE edits SET state='running',updated=? WHERE job_id=?", (time.time(), row['job_id']))
         job_id = row['job_id']
         folder = self.root / 'outputs' / job_id
         try:
-            result = Path(runner(json.loads(row['spec']), folder, lambda message: self.log(job_id, message))).resolve()
+            saved = folder / row['result'] if row['result'] else None
+            result = (saved if saved and saved.is_file() and
+                      (folder / saved.stem / 'quality-report.json').is_file()
+                      else Path(runner(json.loads(row['spec']), folder,
+                                       lambda message: self.log(job_id, message)))).resolve()
             if not result.is_relative_to(folder) or not result.is_file():
                 raise ValueError('修改后的视频路径无效')
             report = json.loads((folder / result.stem / 'quality-report.json').read_text(encoding='utf-8'))
             if not report.get('passed') or report.get('sha256') != hashlib.sha256(result.read_bytes()).hexdigest():
                 raise ValueError('修改后的成片未通过实际视频与声音检查')
             with self.connect() as db:
-                db.execute('UPDATE jobs SET result=?,updated=? WHERE id=?', (result.name, time.time(), job_id))
+                db.execute('UPDATE edits SET result=? WHERE job_id=?', (result.name, job_id))
+            cos_key = self.video_publisher(result, job_id, report['sha256'])
+            with self.connect() as db:
+                db.execute('UPDATE jobs SET result=?,cos_key=?,updated=? WHERE id=?',
+                           (result.name, cos_key, time.time(), job_id))
                 db.execute("UPDATE edits SET state='done',result=?,error=NULL,updated=? WHERE job_id=?",
                            (result.name, time.time(), job_id))
         except Exception as exc:
@@ -176,7 +191,10 @@ class Jobs:
         folder = self.root / 'outputs' / job_id
         folder.mkdir(parents=True, exist_ok=True)
         try:
-            result = Path(runner(json.loads(row['spec']), folder, lambda msg: self.log(job_id, msg))).resolve()
+            saved = folder / row['result'] if row['result'] else None
+            result = (saved if saved and saved.is_file() and (folder / 'quality-report.json').is_file()
+                      else Path(runner(json.loads(row['spec']), folder,
+                                       lambda msg: self.log(job_id, msg)))).resolve()
             if not result.is_relative_to(folder) or not result.is_file():
                 raise ValueError('任务输出路径无效')
             report = json.loads((folder/'quality-report.json').read_text(encoding='utf-8'))
@@ -184,14 +202,49 @@ class Jobs:
             if not report.get('passed') or report.get('sha256') != digest:
                 raise ValueError('实际成片尚未通过检查或检查报告与成片不一致')
             with self.connect() as db:
-                db.execute("UPDATE jobs SET state='done',result=?,error=NULL,updated=? WHERE id=?",
-                           (result.name, time.time(), job_id))
+                db.execute('UPDATE jobs SET result=? WHERE id=?', (result.name, job_id))
+            cos_key = self.video_publisher(result, job_id, digest)
+            with self.connect() as db:
+                db.execute("UPDATE jobs SET state='done',result=?,cos_key=?,source_cos_key=?,error=NULL,updated=? WHERE id=?",
+                           (result.name, cos_key, cos_key, time.time(), job_id))
         except Exception as exc:
             error = clean_error(exc)
             self.log(job_id, '失败：' + error)
             with self.connect() as db:
                 db.execute("UPDATE jobs SET state='failed',error=?,updated=? WHERE id=?", (error, time.time(), job_id))
         return True
+
+    def sync_video(self, job_id):
+        job = self.get(job_id)
+        if job['state'] != 'done':
+            raise HTTPException(409, '成片尚未通过检查')
+        if job['cos_key'] and job['source_cos_key']:
+            return job
+        folder = (self.root / 'outputs' / job_id).resolve()
+        video = (folder / job['result']).resolve()
+        if not video.is_relative_to(folder) or not video.is_file():
+            raise HTTPException(404, '原成片不存在')
+        report_name = (video.stem + '/quality-report.json') if video.name.startswith('edit-') else 'quality-report.json'
+        report = json.loads((folder / report_name).read_text(encoding='utf-8'))
+        digest = hashlib.sha256(video.read_bytes()).hexdigest()
+        if not report.get('passed') or report.get('sha256') != digest:
+            raise HTTPException(409, '原成片与质检报告不一致')
+        cos_key = job['cos_key'] or self.video_publisher(video, job_id, digest)
+        source_cos_key = job['source_cos_key']
+        if not source_cos_key:
+            source_report = json.loads((folder / 'quality-report.json').read_text(encoding='utf-8'))
+            source = Path(source_report.get('video', video)).resolve()
+            if not source.is_relative_to(folder) or not source.is_file():
+                raise HTTPException(404, '原始成片不存在')
+            source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            if not source_report.get('passed') or source_report.get('sha256') != source_digest:
+                raise HTTPException(409, '原始成片与质检报告不一致')
+            source_cos_key = (cos_key if source == video else
+                              self.video_publisher(source, job_id, source_digest))
+        with self.connect() as db:
+            db.execute('UPDATE jobs SET cos_key=?,source_cos_key=? WHERE id=?',
+                       (cos_key, source_cos_key, job_id))
+        return self.get(job_id)
 
 
 def generate(spec, folder, log):
@@ -270,11 +323,12 @@ def source_preview(source, folder):
     return preview
 
 
-def create_app(root=None, token=None, runner=generate, start_worker=True, edit_runner=render_edit):
+def create_app(root=None, token=None, runner=generate, start_worker=True,
+               edit_runner=render_edit, video_publisher=upload_video):
     token = token or os.environ.get('MIXER_API_TOKEN', '')
     if len(token) < 32 or not token.isascii():
         raise ValueError('MIXER_API_TOKEN 必须是至少 32 字符的随机 ASCII 密钥')
-    jobs = Jobs(root or os.environ.get('DATA_DIR', '/data'))
+    jobs = Jobs(root or os.environ.get('DATA_DIR', '/data'), video_publisher)
     stop = threading.Event()
 
     def work():
@@ -346,6 +400,10 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
         if (jobs.root / 'outputs' / job_id / 'quality-report.json').is_file():
             result['report_url'] = f'/v1/jobs/{job_id}/report'
         return result
+
+    @app.post('/v1/jobs/{job_id}/sync-video', dependencies=[Depends(authorize)])
+    def sync_video(job_id: str):
+        return jobs.sync_video(job_id)
 
     @app.post('/v1/jobs/{job_id}/resume', status_code=202, dependencies=[Depends(authorize)])
     def resume(job_id: str):

@@ -24,6 +24,8 @@ class FakeNas:
         self.state = 'queued'
         self.capabilities = []
         self.report_sha = ''
+        self.cos_key = None
+        self.source_cos_key = None
 
     def request(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
@@ -78,6 +80,10 @@ class FakeNas:
             return response
         else:
             value = {'id': 'a' * 32, 'state': self.state, 'logs': ['匹配 1/2：游泳'], 'error': None}
+            if self.cos_key:
+                value['cos_key'] = self.cos_key
+            if self.source_cos_key:
+                value['source_cos_key'] = self.source_cos_key
         response._content = json.dumps(value).encode()
         response._content_consumed = True
         return response
@@ -266,6 +272,53 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/cover').content, b'cover-frame')
         self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/private.env').status_code,404)
         self.assertEqual(self.client.get('/api/jobs/unknown/artifacts/video').status_code,404)
+
+    def test_cos_video_is_cached_and_playable_when_nas_goes_offline(self):
+        video = b'\x00\x00\x00\x18ftypmp42' + b'v' * 1024
+        digest = hashlib.sha256(video).hexdigest()
+        self.nas.cos_key = f'video-jobs/{"a" * 32}/{digest}.mp4'
+        self.nas.source_cos_key = self.nas.cos_key
+        self.submit()
+        self.nas.state = 'done'
+        self.client.get('/api/jobs/test-request-001')
+        body = Mock()
+        body.get_raw_stream.return_value = io.BytesIO(video)
+        with patch('workbench.music_library.client') as cos:
+            cos.return_value.get_object.return_value = {'Body': body}
+            response = self.client.get('/api/jobs/test-request-001/artifacts/video')
+            self.assertEqual(response.content, video)
+            self.assertEqual(cos.return_value.get_object.call_count, 1)
+        self.nas.offline = True
+        ranged = self.client.get('/api/jobs/test-request-001/artifacts/video',
+                                 headers={'Range': 'bytes=0-11'})
+        self.assertEqual(ranged.status_code, 206)
+        self.assertEqual(ranged.content, video[:12])
+        original = self.client.get('/api/jobs/test-request-001/artifacts/source-preview',
+                                   headers={'Range': 'bytes=0-11'})
+        self.assertEqual(original.status_code, 206)
+        self.assertEqual(original.content, video[:12])
+        self.assertFalse(any(path.endswith('/video') for _, path, _ in self.nas.calls))
+
+    def test_completed_edit_changes_cos_video_without_changing_original(self):
+        original = b'\x00\x00\x00\x18ftypmp42' + b'o' * 128
+        revised = b'\x00\x00\x00\x18ftypmp42' + b'r' * 128
+        nas_id = 'a' * 32
+        self.nas.source_cos_key = f'video-jobs/{nas_id}/{hashlib.sha256(original).hexdigest()}.mp4'
+        self.nas.cos_key = self.nas.source_cos_key
+        self.submit()
+        self.nas.state = 'done'
+        self.client.get('/api/jobs/test-request-001')
+        self.nas.cos_key = f'video-jobs/{nas_id}/{hashlib.sha256(revised).hexdigest()}.mp4'
+        self.client.get('/api/jobs/test-request-001/edit-status')
+        with patch('workbench.music_library.client') as cos:
+            def object_for(**kwargs):
+                body = Mock()
+                body.get_raw_stream.return_value = io.BytesIO(
+                    revised if kwargs['Key'] == self.nas.cos_key else original)
+                return {'Body': body}
+            cos.return_value.get_object.side_effect = object_for
+            self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/video').content, revised)
+            self.assertEqual(self.client.get('/api/jobs/test-request-001/artifacts/source-video').content, original)
 
     def test_verified_artifact_cache_serves_video_ranges_and_cover(self):
         video = b'\x00\x00\x00\x18ftypmp42' + b'v' * 256

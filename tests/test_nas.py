@@ -29,7 +29,16 @@ class NasTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.app = create_app(self.root, 'x'*40, start_worker=False)
+        self.published = []
+        self.publish_error = None
+
+        def publish(path, job_id, digest):
+            if self.publish_error:
+                raise self.publish_error
+            self.published.append((path.name, job_id, digest))
+            return f'video-jobs/{job_id}/{digest}.mp4'
+
+        self.app = create_app(self.root, 'x'*40, start_worker=False, video_publisher=publish)
         self.client = TestClient(self.app)
         self.headers = {'Authorization': 'Bearer '+'x'*40, 'Idempotency-Key': 'nas-test-001'}
 
@@ -90,6 +99,91 @@ class NasTests(unittest.TestCase):
         self.assertTrue(self.app.state.jobs.run_one(render))
         self.assertEqual(self.app.state.jobs.get(first)['state'], 'done')
         self.assertEqual(self.app.state.jobs.get(second)['state'], 'queued')
+
+    def test_video_is_published_to_cos_before_job_completes(self):
+        job_id = self.submit().json()['id']
+        rendered = []
+
+        def render(_spec, folder, _log):
+            rendered.append(True)
+            video = folder / 'final.mp4'
+            video.write_bytes(b'verified video')
+            (folder / 'quality-report.json').write_text(json.dumps({
+                'passed': True, 'sha256': hashlib.sha256(video.read_bytes()).hexdigest()}))
+            return video
+
+        self.publish_error = RuntimeError('COS unavailable')
+        self.app.state.jobs.run_one(render)
+        self.assertEqual(self.app.state.jobs.get(job_id)['state'], 'failed')
+        self.assertIsNone(self.app.state.jobs.get(job_id)['cos_key'])
+        self.publish_error = None
+        self.client.post(f'/v1/jobs/{job_id}/resume', headers=self.headers)
+        self.app.state.jobs.run_one(render)
+        result = self.client.get(f'/v1/jobs/{job_id}', headers=self.headers).json()
+        digest = hashlib.sha256(b'verified video').hexdigest()
+        self.assertEqual(result['state'], 'done')
+        self.assertEqual(result['cos_key'], f'video-jobs/{job_id}/{digest}.mp4')
+        self.assertEqual(self.published, [('final.mp4', job_id, digest)])
+        self.assertEqual(len(rendered), 1)
+
+    def test_existing_completed_video_can_be_migrated_once(self):
+        job_id = self.submit().json()['id']
+
+        def render(_spec, folder, _log):
+            video = folder / 'final.mp4'
+            video.write_bytes(b'legacy video')
+            (folder / 'quality-report.json').write_text(json.dumps({
+                'passed': True, 'sha256': hashlib.sha256(video.read_bytes()).hexdigest()}))
+            return video
+
+        self.app.state.jobs.run_one(render)
+        with self.app.state.jobs.connect() as db:
+            db.execute('UPDATE jobs SET cos_key=NULL WHERE id=?', (job_id,))
+        self.published.clear()
+        url = f'/v1/jobs/{job_id}/sync-video'
+        first = self.client.post(url, headers=self.headers)
+        second = self.client.post(url, headers=self.headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()['cos_key'], second.json()['cos_key'])
+        self.assertEqual(len(self.published), 1)
+
+    def test_failed_cos_upload_of_edited_video_keeps_previous_delivery(self):
+        job_id = self.submit().json()['id']
+        jobs = self.app.state.jobs
+
+        def original(_spec, folder, _log):
+            path = folder / 'original.mp4'
+            path.write_bytes(b'original version')
+            (folder / 'quality-report.json').write_text(json.dumps({
+                'passed': True, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}))
+            return path
+
+        jobs.run_one(original)
+        old_key = jobs.get(job_id)['cos_key']
+        jobs.submit_edit(job_id, {'cover_index': 0})
+        rendered = []
+
+        def edited(_spec, folder, _log):
+            rendered.append(True)
+            path = folder / 'edit-second.mp4'
+            path.write_bytes(b'edited version')
+            report = folder / path.stem / 'quality-report.json'
+            report.parent.mkdir(exist_ok=True)
+            report.write_text(json.dumps({
+                'passed': True, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}))
+            return path
+
+        self.publish_error = RuntimeError('COS unavailable')
+        jobs.run_edit(edited)
+        self.assertEqual(jobs.get_edit(job_id)['state'], 'failed')
+        self.assertEqual(jobs.get(job_id)['cos_key'], old_key)
+        self.assertEqual(jobs.get(job_id)['result'], 'original.mp4')
+        self.publish_error = None
+        jobs.submit_edit(job_id, {'cover_index': 0})
+        jobs.run_edit(edited)
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(jobs.get_edit(job_id)['state'], 'done')
+        self.assertNotEqual(jobs.get(job_id)['cos_key'], old_key)
 
     def test_narration_only_export_reaches_review_checkpoint(self):
         job_id = self.submit().json()['id']

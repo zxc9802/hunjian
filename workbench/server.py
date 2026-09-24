@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -218,6 +219,7 @@ def validate_spec(data):
 def create_app(settings=None, nas=None):
     settings = settings or Settings.from_env()
     store, nas = Store(settings.data_dir), nas or Nas(settings)
+    video_cache_lock = threading.Lock()
     assets = [ROOT / 'static/style.css', ROOT / 'static/app.js']
     version = hashlib.sha256(b''.join(path.read_bytes() for path in assets)).hexdigest()[:12]
     page = (ROOT / 'static/index.html').read_text(encoding='utf-8')
@@ -241,6 +243,8 @@ def create_app(settings=None, nas=None):
                 'error': clean(value['error']) if value.get('error') else None,
                 'checkpoint': value.get('checkpoint'),
                 'report_available': bool(value.get('report_url')),
+                'cos_key': value.get('cos_key'),
+                'source_cos_key': value.get('source_cos_key'),
                 'created': value.get('created'), 'updated': value.get('updated')}
 
     @app.middleware('http')
@@ -312,6 +316,40 @@ def create_app(settings=None, nas=None):
             finally:
                 temporary.unlink(missing_ok=True)
         return report
+
+    def cached_cos_video(job, key):
+        if not isinstance(key, str) or not re.fullmatch(
+                rf'video-jobs/{re.escape(job["nas_id"])}/[a-f0-9]{{64}}\.mp4', key):
+            raise HTTPException(502, 'COS 成片记录无效，请检查 NAS 任务状态')
+        digest = key.rsplit('/', 1)[-1][:-4]
+        folder = settings.data_dir / 'artifacts'
+        target = folder / f'{job["nas_id"]}-{digest}.mp4'
+        with video_cache_lock:
+            if not target.is_file():
+                folder.mkdir(parents=True, exist_ok=True)
+                temporary = folder / ('.cos-' + secrets.token_hex(16))
+                try:
+                    upstream = music_library.client().get_object(Bucket=music_library.BUCKET, Key=key)
+                    stream = upstream['Body'].get_raw_stream()
+                    checksum, size = hashlib.sha256(), 0
+                    try:
+                        with temporary.open('xb') as output:
+                            while chunk := stream.read(1024 * 1024):
+                                size += len(chunk)
+                                if size > 512 * 1024 * 1024:
+                                    raise ValueError('COS 成片超出缓存上限')
+                                checksum.update(chunk)
+                                output.write(chunk)
+                    finally:
+                        stream.close()
+                    if size < 128 or checksum.hexdigest() != digest:
+                        raise ValueError('COS 成片与质检校验值不一致')
+                    temporary.replace(target)
+                except Exception:
+                    raise HTTPException(503, 'COS 成片暂时无法读取，请稍后重试') from None
+                finally:
+                    temporary.unlink(missing_ok=True)
+        return target
 
     def forward(job):
         if job['nas_id']:
@@ -551,7 +589,12 @@ def create_app(settings=None, nas=None):
 
     @app.get('/api/jobs/{job_id}/edit-status', dependencies=[Depends(authorize)])
     def edit_status(job_id: str):
-        return read_nas('/v1/jobs/' + finished_nas_id(job_id) + '/edit-status')
+        nas_id = finished_nas_id(job_id)
+        edit = read_nas('/v1/jobs/' + nas_id + '/edit-status')
+        if edit['state'] == 'done':
+            status = read_nas('/v1/jobs/' + nas_id)
+            store.update(job_id, 'done', snapshot=sanitized_snapshot(status))
+        return edit
 
     @app.post('/api/jobs/{job_id}/edit', dependencies=[Depends(authorize)], status_code=202)
     async def save_edit(job_id: str, request: Request):
@@ -596,6 +639,20 @@ def create_app(settings=None, nas=None):
         job = store.get(job_id)
         if not job['nas_id'] or (job['state'] != 'done' and artifact != 'report'):
             raise HTTPException(409, '成片尚未通过检查')
+        if artifact in ('video', 'source-video', 'source-preview') and not job['snapshot'].get(
+                'cos_key' if artifact == 'video' else 'source_cos_key'):
+            try:
+                current = read_nas('/v1/jobs/' + job['nas_id'])
+                if current.get('state') == 'done' and current.get('cos_key'):
+                    job = store.update(job_id, 'done', snapshot=sanitized_snapshot(current))
+            except HTTPException:
+                pass
+        key = job['snapshot'].get('cos_key' if artifact == 'video' else 'source_cos_key')
+        if artifact in ('video', 'source-video', 'source-preview') and key:
+            target = cached_cos_video(job, key)
+            return FileResponse(target, media_type='video/mp4',
+                                filename=f'hainan-{job_id[:12]}-{artifact}.mp4',
+                                content_disposition_type='attachment' if download else 'inline')
         if job['state'] == 'done' and artifact in ('video', 'cover', 'report'):
             report = quality_report(job)
             if artifact == 'report':
