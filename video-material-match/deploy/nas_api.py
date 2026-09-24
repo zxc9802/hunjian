@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -16,13 +17,18 @@ from fastapi.responses import FileResponse
 
 from api import clean_error
 from local_ui import validate_request
-from video_storage import upload_video
+from video_storage import upload_video, delete_videos
+
+
+class JobPaused(BaseException):
+    """Unwind at a checkpoint without treating pause as a provider failure."""
 
 
 class Jobs:
     def __init__(self, root, video_publisher=upload_video):
         self.root = Path(root).resolve()
         self.video_publisher = video_publisher
+        self.storage_lock = threading.Lock()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / 'jobs.sqlite3'
         with self.connect() as db:
@@ -36,6 +42,8 @@ class Jobs:
             db.execute('''CREATE TABLE IF NOT EXISTS edits (
                 job_id TEXT PRIMARY KEY, spec TEXT NOT NULL, state TEXT NOT NULL,
                 updated REAL NOT NULL, result TEXT, error TEXT)''')
+            db.execute('CREATE TABLE IF NOT EXISTS deleted_music (key TEXT PRIMARY KEY)')
+            db.execute("UPDATE jobs SET state='paused' WHERE state='pausing'")
             # Never blindly resubmit a possibly billed model request after a crash.
             db.execute("UPDATE jobs SET state='interrupted', error=?, updated=? WHERE state='running'",
                        ('服务重启中断任务；保留输出和服务商任务记录，核对后再恢复。', time.time()))
@@ -58,9 +66,14 @@ class Jobs:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM jobs WHERE request_key=?', (key,)).fetchone()
             if row:
+                if row['state'] in ('deleted', 'deleting'):
+                    raise HTTPException(410, '这条记录已删除，请新建任务')
                 if row['spec'] != encoded:
                     raise HTTPException(409, '同一 Idempotency-Key 不能提交不同文案或参数')
                 return row['id']
+            if spec.get('music_key') and db.execute('SELECT 1 FROM deleted_music WHERE key=?',
+                                                    (spec['music_key'],)).fetchone():
+                raise HTTPException(409, '所选音乐已删除，请重新选择音乐')
             if db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running')").fetchone()[0] >= 20:
                 raise HTTPException(429, '任务队列已满，请稍后再试')
             job_id = uuid.uuid4().hex
@@ -72,7 +85,7 @@ class Jobs:
     def get(self, job_id):
         with self.connect() as db:
             row = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
-        if row is None:
+        if row is None or row['state'] == 'deleted':
             raise HTTPException(404, '任务不存在')
         result = dict(row)
         result['logs'] = json.loads(result['logs'])
@@ -107,12 +120,81 @@ class Jobs:
             row = db.execute('SELECT state FROM jobs WHERE id=?', (job_id,)).fetchone()
             if row is None:
                 raise HTTPException(404, '任务不存在')
-            if row['state'] not in ('failed', 'interrupted'):
-                raise HTTPException(409, '仅失败或中断的任务可以续作')
+            if row['state'] not in ('failed', 'interrupted', 'paused'):
+                raise HTTPException(409, '仅暂停、失败或中断的任务可以继续')
             db.execute("UPDATE jobs SET state='queued',error=NULL,updated=? WHERE id=?",
                        (time.time(), job_id))
         self.log(job_id, '从已保存的「' + self.checkpoint(job_id) + '」状态继续制作')
         return self.get(job_id)
+
+    def pause(self, job_id):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT state FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if not row or row['state'] == 'deleted':
+                raise HTTPException(404, '任务不存在')
+            if row['state'] not in ('queued', 'running', 'pausing', 'paused'):
+                raise HTTPException(409, '当前任务不能暂停，请刷新状态')
+            state = 'paused' if row['state'] in ('queued', 'paused') else 'pausing'
+            db.execute('UPDATE jobs SET state=?,updated=? WHERE id=?', (state, time.time(), job_id))
+        return self.get(job_id)
+
+    def check_pause(self, job_id):
+        if self.get(job_id)['state'] == 'pausing':
+            raise JobPaused()
+
+    def progress(self, job_id, message):
+        self.check_pause(job_id)
+        self.log(job_id, message)
+
+    def delete(self, job_id):
+        with self.storage_lock:
+            return self._delete(job_id)
+
+    def _delete(self, job_id):
+        if not re.fullmatch(r'[a-f0-9]{32}', job_id):
+            raise HTTPException(404, '任务不存在')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT state FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if not row or row['state'] == 'deleted':
+                return
+            edit = db.execute('SELECT state FROM edits WHERE job_id=?', (job_id,)).fetchone()
+            if row['state'] in ('queued', 'running', 'pausing') or edit and edit['state'] in ('queued', 'running'):
+                raise HTTPException(409, '任务仍在制作或导出，请先暂停制作或等待导出完成')
+            db.execute("UPDATE jobs SET state='deleting',updated=? WHERE id=?", (time.time(), job_id))
+        try:
+            delete_videos(job_id)
+            folder = (self.root / 'outputs' / job_id).resolve()
+            if folder.parent != (self.root / 'outputs').resolve():
+                raise ValueError('任务目录无效')
+            if folder.exists():
+                shutil.rmtree(folder)
+        except Exception:
+            raise HTTPException(503, '成片尚未全部删除，请重试删除；制作记录暂时保留') from None
+        with self.connect() as db:
+            db.execute('DELETE FROM edits WHERE job_id=?', (job_id,))
+            db.execute("UPDATE jobs SET state='deleted',spec='{}',logs='[]',result=NULL,"
+                       'cos_key=NULL,source_cos_key=NULL,error=NULL WHERE id=?', (job_id,))
+
+    def delete_music(self, key):
+        from cos_music import validate_key, delete
+        try:
+            key = validate_key(key)
+            if not key:
+                raise ValueError('请选择要删除的音乐')
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for row in db.execute("SELECT spec FROM jobs WHERE state NOT IN ('done','deleted')"):
+                if json.loads(row['spec']).get('music_key') == key:
+                    raise HTTPException(409, '这首音乐仍被未完成的任务使用，请先完成或删除相关任务')
+            try:
+                delete(key)
+            except Exception:
+                raise HTTPException(503, '音乐删除未完成，请稍后重试') from None
+            db.execute('INSERT OR IGNORE INTO deleted_music VALUES (?)', (key,))
 
     def log(self, job_id, message):
         message = clean_error(message)
@@ -134,6 +216,8 @@ class Jobs:
         encoded = json.dumps(spec, sort_keys=True, ensure_ascii=False)
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            if db.execute('SELECT state FROM jobs WHERE id=?', (job_id,)).fetchone()['state'] != 'done':
+                raise HTTPException(409, '任务状态已变化，请刷新后重试')
             previous = db.execute('SELECT state,spec FROM edits WHERE job_id=?', (job_id,)).fetchone()
             if previous and previous['state'] in ('queued', 'running') and previous['spec'] != encoded:
                 raise HTTPException(409, '上一版文字仍在导出，请等待完成')
@@ -191,10 +275,11 @@ class Jobs:
         folder = self.root / 'outputs' / job_id
         folder.mkdir(parents=True, exist_ok=True)
         try:
+            self.check_pause(job_id)
             saved = folder / row['result'] if row['result'] else None
             result = (saved if saved and saved.is_file() and (folder / 'quality-report.json').is_file()
                       else Path(runner(json.loads(row['spec']), folder,
-                                       lambda msg: self.log(job_id, msg)))).resolve()
+                                       lambda msg: self.progress(job_id, msg)))).resolve()
             if not result.is_relative_to(folder) or not result.is_file():
                 raise ValueError('任务输出路径无效')
             report = json.loads((folder/'quality-report.json').read_text(encoding='utf-8'))
@@ -203,18 +288,29 @@ class Jobs:
                 raise ValueError('实际成片尚未通过检查或检查报告与成片不一致')
             with self.connect() as db:
                 db.execute('UPDATE jobs SET result=? WHERE id=?', (result.name, job_id))
+            self.check_pause(job_id)
             cos_key = self.video_publisher(result, job_id, digest)
             with self.connect() as db:
-                db.execute("UPDATE jobs SET state='done',result=?,cos_key=?,source_cos_key=?,error=NULL,updated=? WHERE id=?",
+                db.execute("UPDATE jobs SET state=CASE WHEN state='pausing' THEN 'paused' ELSE 'done' END,"
+                           'result=?,cos_key=?,source_cos_key=?,error=NULL,updated=? WHERE id=?',
                            (result.name, cos_key, cos_key, time.time(), job_id))
+        except JobPaused:
+            with self.connect() as db:
+                db.execute("UPDATE jobs SET state='paused',error=NULL,updated=? WHERE id=?", (time.time(), job_id))
+            self.log(job_id, '已暂停制作，已完成的进度保留，可继续制作')
         except Exception as exc:
             error = clean_error(exc)
             self.log(job_id, '失败：' + error)
             with self.connect() as db:
-                db.execute("UPDATE jobs SET state='failed',error=?,updated=? WHERE id=?", (error, time.time(), job_id))
+                db.execute("UPDATE jobs SET state=CASE WHEN state='pausing' THEN 'paused' ELSE 'failed' END,"
+                           'error=?,updated=? WHERE id=?', (error, time.time(), job_id))
         return True
 
     def sync_video(self, job_id):
+        with self.storage_lock:
+            return self._sync_video(job_id)
+
+    def _sync_video(self, job_id):
         job = self.get(job_id)
         if job['state'] != 'done':
             raise HTTPException(409, '成片尚未通过检查')
@@ -360,7 +456,7 @@ def create_app(root=None, token=None, runner=generate, start_worker=True,
     @app.get('/health')
     def health():
         return {'status': 'ok', 'service': 'hainan-mixer', 'worker_concurrency': 1,
-                'capabilities': ['cover_editor', 'auto_index']}
+                'capabilities': ['cover_editor', 'auto_index', 'task_controls']}
 
     @app.post('/v1/jobs', status_code=202, dependencies=[Depends(authorize)])
     async def submit(request: Request):
@@ -410,6 +506,20 @@ def create_app(root=None, token=None, runner=generate, start_worker=True,
         result = jobs.resume(job_id)
         result['checkpoint'] = jobs.checkpoint(job_id)
         return result
+
+    @app.post('/v1/jobs/{job_id}/pause', status_code=202, dependencies=[Depends(authorize)])
+    def pause(job_id: str):
+        return jobs.pause(job_id)
+
+    @app.delete('/v1/jobs/{job_id}', dependencies=[Depends(authorize)])
+    def delete_job(job_id: str):
+        jobs.delete(job_id)
+        return {'deleted': True}
+
+    @app.delete('/v1/music', dependencies=[Depends(authorize)])
+    def delete_music(key: str = ''):
+        jobs.delete_music(key)
+        return {'deleted': True}
 
     @app.get('/v1/jobs/{job_id}/edit', dependencies=[Depends(authorize)])
     def edit_form(job_id: str):

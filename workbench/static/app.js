@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const labels = {submitting:'正在提交', uncertain:'等待核对', rejected:'未提交成功', queued:'等待制作', running:'正在制作', done:'已完成', failed:'制作失败', interrupted:'制作中断'};
-const activeStates = new Set(['queued','running','submitting','uncertain']);
+const labels = {submitting:'正在提交', uncertain:'等待核对', rejected:'未提交成功', queued:'等待制作', running:'正在制作', pausing:'正在暂停', paused:'已暂停', deleting:'删除未完成', done:'已完成', failed:'制作失败', interrupted:'制作中断'};
+const activeStates = new Set(['queued','running','pausing','paused','submitting','uncertain']);
 const terminalStates = new Set(['done','failed','interrupted']);
 const sample = '我认为全中国冬天最舒服的城市就是海南的三亚和陵水，这俩地方冬天气温25-28度，我每年都会带着爸妈来这里过冬，就住在三亚海棠湾的这家高端旅居基地。\n\n我比较喜欢这里的一点，就是爸妈住进来以后基本不用操什么心。住宿、吃饭、水电、网络这些都包含了，每天一日三餐都是自助餐，房间也会定期有人打扫。\n\n平时想活动一下，可以泡温泉、游泳、健身，园区里面每天也有不少同龄人一起散步、聊天、参加活动。这里还有医生全天在岗。\n\n如果你也想带爸妈来海南过冬，评论区扣1，我把价格和地址发给你看看。';
 let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, editDraftTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0, editShotCount = 0, editDraftJobId = null, editDraftSave = Promise.resolve(), exportedEditSpec = null, renderingEditSpec = null, editRunning = false, downloadAfterEdit = false, musicSelection = '';
@@ -42,12 +42,26 @@ async function loadMusic() {
       $('music-select').add(new Option(`${track.name} · ${(track.size / 1024 / 1024).toFixed(1)} MB`, track.key));
       const item = document.createElement('li');
       const name = document.createElement('span'); name.textContent = track.name;
+      const heading = document.createElement('div'); heading.className = 'music-track-heading';
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'text-button danger';
+      remove.textContent = '删除'; remove.setAttribute('aria-label', `删除音乐 ${track.name}`);
+      remove.onclick = async () => {
+        if (!confirm(`删除音乐“${track.name}”？音乐库和 COS 中的文件将永久删除，已完成视频的配乐不受影响。`)) return;
+        remove.disabled = true;
+        try {
+          await api(`/api/music?key=${encodeURIComponent(track.key)}`, {method:'DELETE'});
+          if (musicSelection === track.key) { musicSelection = ''; saveDraft(); }
+          const draft = storageGet('hainan-draft');
+          if (draft?.spec?.music_key === track.key) storageSet('hainan-draft', {...draft, spec:{...draft.spec, music_key:null}, requestKey:null, pendingSpec:null});
+          await loadMusic(); toast('音乐已删除');
+        } catch (error) { toast(error.message); remove.disabled = false; }
+      };
       const player = document.createElement('audio'); player.controls = true; player.preload = 'none';
       player.setAttribute('aria-label', `试听 ${track.name}`);
       player.src = `/api/music/preview?key=${encodeURIComponent(track.key)}`;
       player.onplay = () => { pauseMusic(player); voice.pause(); $('video').pause(); };
       player.onerror = () => toast(`“${track.name}”暂时无法试听，请检查连接或音乐格式后重试。`);
-      item.append(name, player); $('music-list').append(item);
+      heading.append(name, remove); item.append(heading, player); $('music-list').append(item);
     }
     $('music-list').hidden = tracks.length === 0;
     if (musicSelection && !tracks.some(track => track.key === musicSelection))
@@ -167,13 +181,18 @@ function updateJobView(job) {
   $('log-count').textContent = logs.length ? `(${logs.length})` : '';
   $('reconcile').hidden = !['uncertain','submitting','rejected'].includes(job.state);
   $('reconcile').textContent = job.state === 'rejected' ? '重新提交原任务' : '核对提交';
-  $('resume').hidden = !['failed','interrupted'].includes(job.state);
+  $('resume').hidden = !['failed','interrupted','paused'].includes(job.state);
+  $('pause-job').hidden = !['queued','running','pausing'].includes(job.state);
+  $('pause-job').disabled = job.state === 'pausing';
+  $('pause-job').textContent = job.state === 'pausing' ? '正在暂停…' : '暂停制作';
+  $('delete-job').disabled = ['queued','running','pausing','submitting','uncertain'].includes(job.state);
+  $('delete-job').textContent = job.state === 'deleting' ? '重试删除记录及成片' : '删除记录及成片';
   $('resume').textContent = `从${job.snapshot?.checkpoint || '保存进度'}继续`;
   $('failed-report').hidden = !(['failed','interrupted'].includes(job.state) && job.snapshot?.report_available);
   $('failed-report').href = `/api/jobs/${encodeURIComponent(job.id)}/artifacts/report`;
   $('job-message').textContent = job.state === 'interrupted'
     ? `${job.error ? job.error + ' ' : ''}已完成内容保留在 NAS。修正问题后，可点击续作。`
-    : job.error || ({queued:'任务已进入 NAS 队列，轮到后会自动开始。',running:logs.at(-1) || '正在准备素材，请稍候。',done:'制作完成。成片已通过画面与声音检查，可以播放或下载。',failed:'任务未完成，请查看日志。已生成的中间文件保留在 NAS。'})[job.state] || '任务已记录，正在核对提交结果。';
+    : job.error || ({queued:'任务已进入 NAS 队列，轮到后会自动开始。',running:logs.at(-1) || '正在准备素材，请稍候。',pausing:'已请求暂停，等待当前步骤结束并保存进度。已发出的配音或检查请求会继续完成。',paused:'制作已暂停，已完成的配音和进度保留。点击继续可恢复制作。',deleting:'删除尚未确认完成，请点击重试删除。',done:'制作完成。成片已通过画面与声音检查，可以播放或下载。',failed:'任务未完成，请查看日志。已生成的中间文件保留在 NAS。'})[job.state] || '任务已记录，正在核对提交结果。';
   $('preview-title').textContent = {queued:'正在等待制作',running:'画面正在成形',failed:'这次制作没有完成',interrupted:'制作暂时中断',uncertain:'正在等待提交确认',rejected:'任务尚未开始'}[job.state] || '等待制作';
   $('preview-subtitle').textContent = terminalStates.has(job.state) && job.state !== 'done' ? '请查看左侧原因与制作日志。' : '可以离开页面，稍后回来查看。';
   if (job.state === 'done') showDelivery(job);
@@ -338,7 +357,7 @@ async function pollJob(id) {
     const job = await api(`/api/jobs/${encodeURIComponent(id)}`);
     if (selected?.id !== id) return;
     $('poll-error').textContent = ''; updateJobView(job);
-    if (['queued','running'].includes(job.state)) pollTimer = setTimeout(() => pollJob(id), 3500);
+    if (['queued','running','pausing'].includes(job.state)) pollTimer = setTimeout(() => pollJob(id), 3500);
   } catch (error) {
     if (selected?.id !== id) return;
     $('poll-error').textContent = error.message + ' 页面会继续尝试查询。';
@@ -387,6 +406,29 @@ $('resume').onclick = async () => {
     if (selected?.id === id) { updateJobView(job); pollJob(id); }
   } catch (error) { if (selected?.id === id) $('poll-error').textContent = error.message; }
   finally { $('resume').disabled = false; }
+};
+$('pause-job').onclick = async () => {
+  const id = selected?.id; if (!id) return;
+  $('pause-job').disabled = true;
+  try {
+    const job = await api(`/api/jobs/${encodeURIComponent(id)}/pause`, {method:'POST'});
+    if (selected?.id === id) { updateJobView(job); pollJob(id); }
+  } catch (error) { toast(error.message); $('pause-job').disabled = false; }
+};
+$('delete-job').onclick = async () => {
+  const id = selected?.id; if (!id) return;
+  if (!confirm('永久删除这条制作记录及其全部成片版本？COS 成片、任务生成文件和缓存会一起删除，无法恢复。素材库原片保留。')) return;
+  $('delete-job').disabled = true; clearTimeout(pollTimer); clearTimeout(editTimer); clearTimeout(editDraftTimer);
+  editDraftJobId = null; $('video').pause();
+  try {
+    await api(`/api/jobs/${encodeURIComponent(id)}`, {method:'DELETE'});
+    jobs = jobs.filter(job => job.id !== id);
+    if (selected?.id === id) newDraft();
+    await refreshHistory(); toast('制作记录及成片已删除');
+  } catch (error) {
+    if (selected?.id === id) { clearPreview(); pollJob(id); }
+    toast(error.message); $('delete-job').disabled = false;
+  }
 };
 $('music-select').onchange = () => { musicSelection = $('music-select').value; saveDraft(); };
 $('music-upload').onclick = async () => {

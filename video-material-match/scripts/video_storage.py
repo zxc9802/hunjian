@@ -30,3 +30,23 @@ def upload_video(path, job_id, digest):
     if int(remote['Content-Length']) != path.stat().st_size:
         raise RuntimeError('COS 成片大小与已检查文件不一致')
     return key
+
+
+def delete_videos(job_id):
+    prefix = video_key(job_id, '0' * 64).rsplit('/', 1)[0] + '/'
+    from qcloud_cos import CosConfig, CosS3Client
+    cos = CosS3Client(CosConfig(Region=REGION, SecretId=os.environ['COS_SECRET_ID'],
+                                SecretKey=os.environ['COS_SECRET_KEY'], Scheme='https', Timeout=30))
+    marker = ''
+    while True:
+        page = cos.list_objects(Bucket=BUCKET, Prefix=prefix, Marker=marker, MaxKeys=1000)
+        objects = [{'Key': item['Key']} for item in page.get('Contents', [])]
+        if any(not item['Key'].startswith(prefix) for item in objects):
+            raise ValueError('COS 返回了非本任务的文件')
+        if objects:
+            result = cos.delete_objects(Bucket=BUCKET, Delete={'Object': objects, 'Quiet': 'true'})
+            if result.get('Error'):
+                raise RuntimeError('部分 COS 成片未能删除')
+        if str(page.get('IsTruncated')).lower() != 'true':
+            break
+        marker = page.get('NextMarker') or objects[-1]['Key']

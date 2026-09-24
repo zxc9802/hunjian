@@ -52,6 +52,16 @@ class FakeNas:
             value = {'id': 'a' * 32, 'state': 'queued', 'logs': ['从保存进度继续'],
                      'error': None, 'checkpoint': '动态镜头补齐'}
             response.status_code = 202
+        elif path.endswith('/pause') and method == 'POST':
+            self.state = 'paused' if self.state == 'queued' else 'pausing'
+            value = {'state': self.state}
+            response.status_code = 202
+        elif method == 'DELETE':
+            if path.startswith('/v1/jobs/') and self.state in ('queued', 'running', 'pausing'):
+                response.status_code = 409
+                value = {'detail': '请先暂停制作'}
+            else:
+                value = {'deleted': True}
         elif '/covers/' in path:
             response.headers['Content-Type'] = 'image/jpeg'
             response._content = b'\xff\xd8\xff\xd9'
@@ -103,6 +113,49 @@ class WorkbenchTests(unittest.TestCase):
 
     def submit(self, **kwargs):
         return self.client.post('/api/jobs', json={**self.spec, **kwargs}, headers=self.headers)
+
+    def test_pause_resume_and_delete_remove_only_this_jobs_cache(self):
+        job = self.submit().json()
+        url = '/api/jobs/' + job['id']
+        self.assertEqual(self.client.post(url + '/pause', headers=self.headers).status_code, 202)
+        self.assertEqual(self.client.get(url).json()['state'], 'paused')
+        self.assertEqual(self.client.post(url + '/resume', headers=self.headers).status_code, 202)
+        self.client.post(url + '/pause', headers=self.headers)
+        folder = self.path / 'artifacts'; folder.mkdir()
+        cached = folder / (job['nas_id'] + '-hash.mp4'); cached.write_bytes(b'video')
+        other = folder / ('b' * 32 + '-hash.mp4'); other.write_bytes(b'other')
+        self.app.state.store.save_edit_draft(job['id'], {'white': 'draft'})
+        self.assertEqual(self.client.delete(url, headers=self.headers).status_code, 200)
+        self.assertFalse(cached.exists()); self.assertTrue(other.exists())
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.get('/api/jobs').json()['jobs'], [])
+        self.assertIsNone(self.app.state.store.edit_draft(job['id']))
+        self.assertEqual(self.submit().status_code, 410)
+
+    def test_delete_failure_keeps_record_and_blocks_cached_download(self):
+        job = self.submit().json(); url = '/api/jobs/' + job['id']
+        self.nas.state = 'done'; self.client.get(url)
+        self.nas.offline = True
+        self.assertEqual(self.client.delete(url, headers=self.headers).status_code, 503)
+        self.assertEqual(self.app.state.store.get(job['id'])['state'], 'deleting')
+        self.assertEqual(self.client.get(url + '/artifacts/video').status_code, 409)
+        self.nas.offline = False
+        self.assertEqual(self.client.delete(url, headers=self.headers).status_code, 200)
+
+    def test_music_deletion_validates_key_and_requires_same_origin(self):
+        key = 'music-library/' + 'a' * 32 + '/track.mp3'
+        self.assertEqual(self.client.delete('/api/music', params={'key':key}).status_code, 403)
+        self.assertEqual(self.client.delete('/api/music', params={'key':'video-jobs/other.mp4'}, headers=self.headers).status_code, 400)
+        self.assertEqual(self.client.delete('/api/music', params={'key':key}, headers=self.headers).status_code, 200)
+        self.assertEqual(self.nas.calls[-1][0:2], ('DELETE', '/v1/music'))
+        self.assertEqual(self.nas.calls[-1][2]['params'], {'key':key})
+
+    def test_stale_poll_cannot_restore_deleting_record(self):
+        job = self.submit().json()
+        store = self.app.state.store
+        store.update(job['id'], 'deleting')
+        store.update(job['id'], 'done')
+        self.assertEqual(store.get(job['id'])['state'], 'deleting')
 
     def test_nas_stream_keeps_session_open_until_response_closes(self):
         class Session:

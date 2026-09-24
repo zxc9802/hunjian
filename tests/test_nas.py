@@ -45,6 +45,61 @@ class NasTests(unittest.TestCase):
     def submit(self, **body):
         return self.client.post('/v1/jobs', headers=self.headers, json={'text': '这里可以游泳。', **body})
 
+    def test_pause_queue_and_resume_preserves_progress(self):
+        jid = self.submit().json()['id']
+        response = self.client.post(f'/v1/jobs/{jid}/pause', headers=self.headers)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()['state'], 'paused')
+        self.assertFalse(self.app.state.jobs.run_one(lambda *_: self.fail('paused task ran')))
+        self.assertEqual(self.client.post(f'/v1/jobs/{jid}/resume', headers=self.headers).json()['state'], 'queued')
+
+    def test_running_pause_stops_at_checkpoint_without_publishing(self):
+        jid = self.submit().json()['id']
+        def runner(spec, folder, log):
+            (folder / 'saved.txt').write_text('progress')
+            response = self.client.post(f'/v1/jobs/{jid}/pause', headers=self.headers)
+            self.assertEqual(response.json()['state'], 'pausing')
+            log('next stage')
+            self.fail('continued after pause')
+        self.app.state.jobs.run_one(runner)
+        self.assertEqual(self.app.state.jobs.get(jid)['state'], 'paused')
+        self.assertEqual((self.root / 'outputs' / jid / 'saved.txt').read_text(), 'progress')
+        self.assertEqual(self.published, [])
+        self.assertEqual(Jobs(self.root).get(jid)['state'], 'paused')
+
+    def test_delete_requires_inactive_job_and_retries_cos_failure(self):
+        jid = self.submit().json()['id']
+        url = f'/v1/jobs/{jid}'
+        self.assertEqual(self.client.delete(url, headers=self.headers).status_code, 409)
+        self.client.post(url + '/pause', headers=self.headers)
+        folder = self.root / 'outputs' / jid
+        folder.mkdir(parents=True); (folder / 'video.mp4').write_bytes(b'video')
+        with patch('nas_api.delete_videos', side_effect=RuntimeError('COS unavailable')):
+            self.assertEqual(self.client.delete(url, headers=self.headers).status_code, 503)
+        self.assertEqual(self.app.state.jobs.get(jid)['state'], 'deleting')
+        self.assertEqual(self.client.post(url + '/resume', headers=self.headers).status_code, 409)
+        with patch('nas_api.delete_videos') as delete:
+            self.assertEqual(self.client.delete(url, headers=self.headers).status_code, 200)
+            delete.assert_called_once_with(jid)
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.client.get(url, headers=self.headers).status_code, 404)
+        self.assertEqual(self.submit().status_code, 410)
+        self.assertEqual(self.client.delete(url, headers=self.headers).status_code, 200)
+
+    def test_music_delete_blocks_resumable_jobs_and_rejects_deleted_selection(self):
+        key = 'music-library/' + 'a' * 32 + '/track.mp3'
+        jid = self.submit(music_key=key).json()['id']
+        self.client.post(f'/v1/jobs/{jid}/pause', headers=self.headers)
+        with patch('cos_music.delete', create=True) as delete:
+            self.assertEqual(self.client.delete('/v1/music', params={'key': key}, headers=self.headers).status_code, 409)
+            delete.assert_not_called()
+            with self.app.state.jobs.connect() as db:
+                db.execute("UPDATE jobs SET state='done' WHERE id=?", (jid,))
+            self.assertEqual(self.client.delete('/v1/music', params={'key': key}, headers=self.headers).status_code, 200)
+            delete.assert_called_once_with(key)
+        self.assertEqual(self.client.post('/v1/jobs', json={'text': '新任务', 'music_key': key},
+            headers={**self.headers, 'Idempotency-Key': 'deleted-music-test'}).status_code, 409)
+
     def test_auth_validation_and_idempotency(self):
         self.assertIn('cover_editor', self.client.get('/health').json()['capabilities'])
         self.assertEqual(self.client.post('/v1/jobs', json={'text': '测试'}).status_code, 401)

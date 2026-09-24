@@ -38,3 +38,13 @@ def download(key, folder):
     finally:
         temporary.unlink(missing_ok=True)
     return target
+
+
+def delete(key):
+    key = validate_key(key)
+    if not key:
+        raise ValueError('请选择要删除的音乐')
+    from qcloud_cos import CosConfig, CosS3Client
+    cos = CosS3Client(CosConfig(Region='ap-singapore', SecretId=os.environ['COS_SECRET_ID'],
+                                SecretKey=os.environ['COS_SECRET_KEY'], Scheme='https'))
+    cos.delete_object(Bucket=BUCKET, Key=key)

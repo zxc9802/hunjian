@@ -111,7 +111,7 @@ class Store:
     def get(self, job_id):
         self.prune_history()
         with self.connect() as db:
-            row = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            row = db.execute("SELECT * FROM jobs WHERE id=? AND state!='deleted'", (job_id,)).fetchone()
         if not row:
             raise HTTPException(404, '任务不存在')
         return self.decode(row)
@@ -120,7 +120,9 @@ class Store:
         encoded = json.dumps(spec, ensure_ascii=False, sort_keys=True)
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            old = db.execute('SELECT spec FROM jobs WHERE id=?', (job_id,)).fetchone()
+            old = db.execute('SELECT spec,state FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if old and old['state'] in ('deleted', 'deleting'):
+                raise HTTPException(410, '这条记录已删除，请新建任务')
             if old and old['spec'] != encoded:
                 raise HTTPException(409, '此提交标识已有不同文案，请新建任务')
             now = time.time()
@@ -133,9 +135,10 @@ class Store:
             db.execute('''UPDATE jobs SET state=?, nas_id=coalesce(?,nas_id),
                 snapshot=coalesce(?,snapshot), error=?,
                 updated=CASE WHEN state=? AND state IN ('done','failed','interrupted','rejected')
-                    THEN updated ELSE ? END WHERE id=?''',
+                    THEN updated ELSE ? END WHERE id=? AND state!='deleted'
+                    AND (state!='deleting' OR ?='deleting') ''',
                        (state, nas_id, json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None,
-                        error, state, time.time(), job_id))
+                        error, state, time.time(), job_id, state))
         return self.get(job_id)
 
     def prune_history(self):
@@ -157,7 +160,12 @@ class Store:
     def list(self):
         self.prune_history()
         with self.connect() as db:
-            return [self.decode(row) for row in db.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 100')]
+            return [self.decode(row) for row in db.execute("SELECT * FROM jobs WHERE state!='deleted' ORDER BY created DESC LIMIT 100")]
+
+    def delete(self, job_id):
+        with self.connect() as db:
+            db.execute('DELETE FROM edit_drafts WHERE job_id=?', (job_id,))
+            db.execute("UPDATE jobs SET state='deleted',spec='{}',snapshot='{}',error=NULL WHERE id=?", (job_id,))
 
 
 class Nas:
@@ -325,6 +333,8 @@ def create_app(settings=None, nas=None):
         folder = settings.data_dir / 'artifacts'
         target = folder / f'{job["nas_id"]}-{digest}.mp4'
         with video_cache_lock:
+            if store.get(job['id'])['state'] != 'done':
+                raise HTTPException(409, '任务已开始删除，请刷新制作记录')
             if not target.is_file():
                 folder.mkdir(parents=True, exist_ok=True)
                 temporary = folder / ('.cos-' + secrets.token_hex(16))
@@ -443,6 +453,27 @@ def create_app(settings=None, nas=None):
                           bool(os.environ.get('COS_SECRET_ID')), bool(os.environ.get('COS_SECRET_KEY')))
             raise HTTPException(503, '音乐库暂时无法连接，请检查腾讯 COS 环境变量和存储桶权限') from None
 
+    @app.delete('/api/music', dependencies=[Depends(authorize)])
+    def delete_music(key: str = ''):
+        try:
+            key = music_library.validate_key(key)
+            if not key:
+                raise ValueError('请选择要删除的音乐')
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return nas_action('DELETE', '/v1/music', params={'key': key})
+
+    def nas_action(method, path, **kwargs):
+        try:
+            with nas.request(method, path, **kwargs) as response:
+                if response.status_code in (200, 202):
+                    return response.json()
+                if response.status_code in (400, 404, 409, 410, 503):
+                    raise HTTPException(response.status_code, clean(response.json().get('detail', '操作未完成，请刷新后重试')))
+                raise HTTPException(502, 'NAS 暂时无法完成操作，请稍后重试')
+        except (requests.RequestException, ValueError):
+            raise HTTPException(503, '无法确认操作结果，请刷新状态后重试') from None
+
     @app.get('/api/music/preview', dependencies=[Depends(authorize)])
     def preview_music(request: Request, key: str = ''):
         from qcloud_cos.cos_exception import CosServiceError
@@ -535,8 +566,8 @@ def create_app(settings=None, nas=None):
     @app.post('/api/jobs/{job_id}/resume', dependencies=[Depends(authorize)], status_code=202)
     def resume_job(job_id: str):
         job = store.get(job_id)
-        if job['state'] not in ('failed', 'interrupted') or not job['nas_id']:
-            raise HTTPException(409, '仅已失败或中断的 NAS 任务可以续作')
+        if job['state'] not in ('failed', 'interrupted', 'paused') or not job['nas_id']:
+            raise HTTPException(409, '仅暂停、失败或中断的任务可以继续')
         try:
             with nas.request('POST', '/v1/jobs/' + job['nas_id'] + '/resume') as response:
                 if response.status_code == 202:
@@ -548,12 +579,48 @@ def create_app(settings=None, nas=None):
         except (requests.RequestException, ValueError):
             raise HTTPException(503, '续作请求状态不确定，请刷新任务检查，避免重复点击') from None
 
+    @app.post('/api/jobs/{job_id}/pause', dependencies=[Depends(authorize)], status_code=202)
+    def pause_job(job_id: str):
+        job = store.get(job_id)
+        if not job['nas_id'] or job['state'] not in ('queued', 'running', 'pausing', 'paused'):
+            raise HTTPException(409, '当前任务不能暂停，请先刷新或核对提交')
+        value = nas_action('POST', '/v1/jobs/' + job['nas_id'] + '/pause')
+        return store.update(job_id, value['state'], snapshot=sanitized_snapshot(value))
+
+    @app.delete('/api/jobs/{job_id}', dependencies=[Depends(authorize)])
+    def delete_job(job_id: str):
+        try:
+            job = store.get(job_id)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return {'deleted': True}
+            raise
+        if job['state'] in ('submitting', 'uncertain', 'queued', 'running', 'pausing'):
+            raise HTTPException(409, '请先核对提交或暂停制作，再删除记录')
+        with video_cache_lock:
+            store.update(job_id, 'deleting')
+            if job['nas_id']:
+                try:
+                    nas_action('DELETE', '/v1/jobs/' + job['nas_id'])
+                except HTTPException as exc:
+                    if exc.status_code == 409:
+                        with store.connect() as db:
+                            db.execute("UPDATE jobs SET state=? WHERE id=? AND state='deleting'", (job['state'], job_id))
+                    raise
+                if not re.fullmatch(r'[a-f0-9]{32}', job['nas_id']):
+                    raise HTTPException(502, '任务文件标识无效')
+                for path in (settings.data_dir / 'artifacts').glob(job['nas_id'] + '-*'):
+                    if path.is_file():
+                        path.unlink()
+            store.delete(job_id)
+        return {'deleted': True}
+
     @app.get('/api/jobs/{job_id}', dependencies=[Depends(authorize)])
     def job_status(job_id: str):
         job = store.get(job_id)
-        if job['nas_id'] and (job['state'] != 'done' or not job['snapshot']):
+        if job['nas_id'] and job['state'] != 'deleting' and (job['state'] != 'done' or not job['snapshot']):
             value = read_nas('/v1/jobs/' + job['nas_id'])
-            if value.get('state') not in {'queued', 'running', *TERMINAL}:
+            if value.get('state') not in {'queued', 'running', 'paused', 'pausing', 'deleting', *TERMINAL}:
                 raise HTTPException(502, 'NAS 返回了未知任务状态')
             job = store.update(job_id, value['state'], snapshot=sanitized_snapshot(value),
                                error=clean(value['error']) if value.get('error') else None)
