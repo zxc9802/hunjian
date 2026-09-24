@@ -72,6 +72,25 @@ class NasTests(unittest.TestCase):
         self.assertEqual(saved.read_bytes(), b'paid-voice')
         self.assertEqual(self.client.post(f'/v1/jobs/{job_id}/resume', headers=self.headers).status_code, 409)
 
+    def test_new_job_is_independent_while_previous_job_runs(self):
+        first = self.submit().json()['id']
+        second_headers = {**self.headers, 'Idempotency-Key': 'nas-test-002'}
+        second = self.client.post('/v1/jobs', headers=second_headers, json={'text': '第二条文案。'}).json()['id']
+        self.assertNotEqual(first, second)
+
+        def render(_spec, folder, _log):
+            self.assertEqual(self.app.state.jobs.get(first)['state'], 'running')
+            self.assertEqual(self.app.state.jobs.get(second)['state'], 'queued')
+            result = folder / 'final.mp4'
+            result.write_bytes(b'first video')
+            (folder / 'quality-report.json').write_text(json.dumps({
+                'passed': True, 'sha256': hashlib.sha256(result.read_bytes()).hexdigest()}))
+            return result
+
+        self.assertTrue(self.app.state.jobs.run_one(render))
+        self.assertEqual(self.app.state.jobs.get(first)['state'], 'done')
+        self.assertEqual(self.app.state.jobs.get(second)['state'], 'queued')
+
     def test_narration_only_export_reaches_review_checkpoint(self):
         job_id = self.submit().json()['id']
         folder = self.root / 'outputs' / job_id
@@ -151,6 +170,29 @@ class NasTests(unittest.TestCase):
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/cuts', headers=self.headers).json(), [{'scene':1}])
         self.assertFalse(jobs.run_one(render))
         self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/jobs.sqlite3', headers=self.headers).status_code, 404)
+
+    def test_original_video_remains_available_after_title_export(self):
+        job_id = self.submit().json()['id']
+        jobs = self.app.state.jobs
+
+        def render(_spec, folder, _log):
+            source = folder / 'final.mp4'
+            source.write_bytes(b'original video')
+            (folder / 'quality-report.json').write_text(json.dumps({
+                'passed': True, 'video': str(source.resolve()),
+                'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}))
+            return source
+
+        self.assertTrue(jobs.run_one(render))
+        folder = self.root / 'outputs' / job_id
+        edited = folder / 'edit-test.mp4'
+        edited.write_bytes(b'edited video')
+        with jobs.connect() as db:
+            db.execute('UPDATE jobs SET result=? WHERE id=?', (edited.name, job_id))
+        response = self.client.get(f'/v1/jobs/{job_id}/source-video', headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b'original video')
+        self.assertEqual(self.client.get(f'/v1/jobs/{job_id}/video', headers=self.headers).content, b'edited video')
 
     def test_cover_edit_queue_reuses_original_and_delivers_only_reviewed_revision(self):
         import media

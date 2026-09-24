@@ -55,7 +55,7 @@
   <div class="main-shell">
     <header class="topbar"><span>制作工作台</span><div class="topbar-actions"><button id="connection" class="connection" aria-label="检查 NAS 连接"><span class="status-dot"></span><span id="connection-text">正在连接素材库</span><svg class="icon"><use href="#i-refresh"/></svg></button><button id="logout" class="text-button" hidden>退出登录</button></div></header>
     <main id="workspace">
-      <div class="page-heading"><div><h1 id="page-title">新建视频</h1><p id="page-description">写下想说的话，把其余的交给工作台。</p></div><span id="draft-label" class="small muted">本机草稿</span></div>
+      <div class="page-heading"><div><h1 id="page-title">新建视频</h1><p id="page-description">写下新文案；制作记录里的任务会继续处理。</p></div><span id="draft-label" class="small muted">本机草稿</span></div>
       <p id="connection-error" class="notice" role="status" hidden></p>
       <div class="workspace-grid">
         <section class="editor-column" aria-label="制作设置">
@@ -79,12 +79,12 @@
               <ul id="music-list" class="music-list" aria-label="音乐库试听" hidden></ul>
             </section>
             <p id="form-error" class="error" role="alert"></p>
-            <div id="create-actions" class="create-actions"><button id="generate" class="button primary" type="submit">开始制作 <svg class="icon"><use href="#i-arrow"/></svg></button><p>提交后可离开页面，稍后从制作记录查看。</p></div>
+            <div id="create-actions" class="create-actions"><button id="generate" class="button primary" type="submit">开始制作 <svg class="icon"><use href="#i-arrow"/></svg></button><p>每条视频独立记录进度；新任务可在旧任务制作时提交。</p></div>
           </form>
           <div id="job-actions" class="job-actions" hidden><button id="reuse" class="button quiet"><svg class="icon"><use href="#i-copy"/></svg>沿用文案新建</button><button id="reconcile" class="button primary" hidden>核对提交</button><button id="resume" class="button primary" hidden>从保存进度继续</button></div>
           <section id="cover-editor" class="cover-editor" hidden aria-labelledby="cover-editor-heading">
             <div class="section-line"><h2 id="cover-editor-heading">封面与整片标题</h2><span class="small muted">从成片中挑选画面</span></div>
-            <p class="small muted">封面只出现 0.5 秒。上方白字和黄字填写一次，在后续整条视频中保持不变；下方口播字幕仍随配音变化。</p>
+            <p class="small muted">改字后右侧立即预览，修改会自动保存到这条任务。下载时才生成带新文字的 MP4；下方口播字幕仍随配音变化。</p>
             <div id="cover-grid" class="cover-grid" role="radiogroup" aria-label="选择封面画面"></div>
             <label for="cover-text">封面中间的大黄字</label>
             <textarea id="cover-text" maxlength="28" rows="2" placeholder="例如：带爸妈来海南过冬"></textarea>
@@ -94,7 +94,7 @@
               <label for="title-yellow">下方黄字<input id="title-yellow" type="text" maxlength="28" placeholder="例如：夫妻连续三年过冬"></label>
             </div>
             <p id="edit-message" class="small muted" role="status"></p>
-            <button id="save-edit" type="button" class="button primary">导出封面版成片 <svg class="icon"><use href="#i-arrow"/></svg></button>
+            <button id="save-edit" type="button" class="button primary">生成并下载成片 <svg class="icon"><use href="#i-arrow"/></svg></button>
           </section>
           <section id="progress-section" class="progress-section" hidden aria-labelledby="progress-heading">
             <div class="section-line"><h2 id="progress-heading">制作进度</h2><span id="job-status" class="state-tag" role="status"></span></div>
@@ -105,7 +105,7 @@
         </section>
         <aside class="preview-column" aria-label="成片预览">
           <div class="section-line"><h2>成片预览</h2><span id="preview-format" class="small muted">9:16</span></div>
-          <div id="preview-frame" class="preview-frame"><div id="preview-empty" class="preview-empty"><svg class="icon preview-icon"><use href="#i-film"/></svg><strong id="preview-title">下一支视频，从这里开始</strong><p id="preview-subtitle">提交文案后，工作台会匹配画面、<br>生成配音，并检查最终成片。</p></div><video id="video" controls playsinline preload="metadata" hidden aria-label="检查通过的成片"></video></div>
+          <div id="preview-frame" class="preview-frame"><div id="preview-empty" class="preview-empty"><svg class="icon preview-icon"><use href="#i-film"/></svg><strong id="preview-title">下一支视频，从这里开始</strong><p id="preview-subtitle">提交文案后，工作台会匹配画面、<br>生成配音，并检查最终成片。</p></div><video id="video" controls playsinline preload="metadata" hidden aria-label="检查通过的成片"></video><div id="live-overlay" class="live-overlay" hidden aria-hidden="true"><div id="live-cover" class="live-cover" hidden><img id="live-cover-image" alt=""><strong id="live-cover-text"></strong></div><div id="live-title" class="live-title"><span id="live-title-white"></span><span id="live-title-yellow"></span></div></div></div>
           <p id="video-error" class="error" role="alert"></p>
           <div id="delivery" class="delivery" hidden><p class="review-passed"><svg class="icon"><use href="#i-check"/></svg> 已通过成片检查</p><button id="open-editor" type="button" class="button quiet" hidden>选择封面和画面文字</button><a id="download-video" class="button primary" download><svg class="icon"><use href="#i-download"/></svg> 下载成片</a><div class="download-extras"><a id="download-cover" download hidden>下载封面</a><a id="download-captions" download>下载字幕</a><a id="download-report" target="_blank" rel="noopener">查看检查报告</a></div><p id="quality-summary" class="small muted"></p></div>
           <div id="workflow-note" class="workflow-note"><h3>从文案，到真实画面</h3><p>素材匹配、专属配音、自动剪辑。<br>完成画面与声音检查后，交付成片。</p><div class="note-rule"></div><p class="small">使用素材库原片制作。<br>遇到缺素材或生成问题，会明确提示。</p></div>

@@ -4,13 +4,13 @@ const labels = {submitting:'正在提交', uncertain:'等待核对', rejected:'�
 const activeStates = new Set(['queued','running','submitting','uncertain']);
 const terminalStates = new Set(['done','failed','interrupted']);
 const sample = '我认为全中国冬天最舒服的城市就是海南的三亚和陵水，这俩地方冬天气温25-28度，我每年都会带着爸妈来这里过冬，就住在三亚海棠湾的这家高端旅居基地。\n\n我比较喜欢这里的一点，就是爸妈住进来以后基本不用操什么心。住宿、吃饭、水电、网络这些都包含了，每天一日三餐都是自助餐，房间也会定期有人打扫。\n\n平时想活动一下，可以泡温泉、游泳、健身，园区里面每天也有不少同龄人一起散步、聊天、参加活动。这里还有医生全天在岗。\n\n如果你也想带爸妈来海南过冬，评论区扣1，我把价格和地址发给你看看。';
-let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0, editShotCount = 0, musicSelection = '';
+let jobs = [], selected = null, filter = 'all', pollTimer, refreshTimer, healthTimer, editTimer, editDraftTimer, toastTimer, submitting = false, authenticated = false, coverEditorAvailable = false, requestKey = null, pendingSpec = null, coverIndex = 0, editShotCount = 0, editDraftJobId = null, editDraftSave = Promise.resolve(), exportedEditSpec = null, renderingEditSpec = null, editRunning = false, downloadAfterEdit = false, musicSelection = '';
 const voice = new Audio('/api/reference/voice');
 
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4000); }
 function storageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
 function storageSet(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } }
-function stopTimers() { clearTimeout(pollTimer); clearTimeout(refreshTimer); clearTimeout(healthTimer); clearTimeout(editTimer); }
+function stopTimers() { clearTimeout(pollTimer); clearTimeout(refreshTimer); clearTimeout(healthTimer); clearTimeout(editTimer); clearTimeout(editDraftTimer); }
 function showLogin() { authenticated = false; coverEditorAvailable = false; stopTimers(); pauseMusic(); voice.pause(); $('video').pause(); $('app').hidden = true; $('loading-view').hidden = true; $('login-view').hidden = false; }
 async function api(path, options = {}) {
   let response;
@@ -79,23 +79,25 @@ function setReadOnly(readonly) {
   $('job-actions').hidden = !readonly;
 }
 function clearPreview() {
+  if (editDraftTimer) { clearTimeout(editDraftTimer); void persistEditDraft(); }
   $('video').pause(); $('video').removeAttribute('src'); $('video').load(); $('video').hidden = true;
   $('preview-empty').hidden = false; $('delivery').hidden = true; $('workflow-note').hidden = false;
   $('cover-editor').hidden = true; clearTimeout(editTimer);
+  $('live-overlay').hidden = true; editDraftJobId = null; exportedEditSpec = null; renderingEditSpec = null; editRunning = false; downloadAfterEdit = false;
   $('quality-summary').textContent = ''; $('video-error').textContent = '';
 }
-function newDraft(spec = null) {
+function newDraft(spec = null, restoreSaved = true) {
   if (submitting) return;
   selected = null; clearTimeout(pollTimer); requestKey = null; pendingSpec = null;
   history.replaceState(null, '', '/');
   clearPreview(); setReadOnly(false); $('progress-section').hidden = true;
-  $('page-title').textContent = '新建视频'; $('page-description').textContent = '写下想说的话，把其余的交给工作台。';
+  $('page-title').textContent = '新建视频'; $('page-description').textContent = '写下新文案；制作记录里的任务会继续处理。';
   $('preview-title').textContent = '下一支视频，从这里开始'; $('preview-subtitle').textContent = '提交文案后，工作台会匹配画面、生成配音，并检查最终成片。';
   $('form-error').textContent = ''; $('draft-label').textContent = '本机草稿';
-  const draft = spec ? {spec} : storageGet('hainan-draft');
+  const draft = spec ? {spec} : restoreSaved ? storageGet('hainan-draft') : null;
   setSpec(draft?.spec || {text:'', emotion_alpha:.8, width:1080, height:1920});
   requestKey = draft?.requestKey || null; pendingSpec = draft?.pendingSpec || null;
-  if (spec) saveDraft();
+  if (spec || !restoreSaved) saveDraft();
   renderHistory();
 }
 function closeMobileHistory() { $('history-panel').classList.remove('open'); $('history-toggle').setAttribute('aria-expanded','false'); }
@@ -200,14 +202,59 @@ async function showDelivery(job) {
 }
 
 function formatSecond(value) { const n = Math.floor(value); return `${Math.floor(n / 60).toString().padStart(2, '0')}:${(n % 60).toString().padStart(2, '0')}`; }
+function editDraft() { return {cover_index:coverIndex, cover_text:$('cover-text').value.trim(), white:$('title-white').value.trim(), yellow:$('title-yellow').value.trim()}; }
+function flattenedEdit(spec) { return spec ? {cover_index:spec.cover_index, cover_text:spec.cover_text, white:spec.titles?.[0]?.white || '', yellow:spec.titles?.[0]?.yellow || ''} : null; }
+function editChanged() { return JSON.stringify(editDraft()) !== JSON.stringify(exportedEditSpec); }
+function updateEditActions() {
+  const changed = editChanged();
+  $('download-video').lastChild.textContent = changed ? ' 下载更新后的成片' : ' 下载成片';
+  $('save-edit').firstChild.textContent = changed ? '生成并下载成片 ' : '重新下载成片 ';
+}
+function updateLiveOverlay() {
+  if ($('live-overlay').hidden) return;
+  const cover = $('video').currentTime < .5;
+  $('live-cover').hidden = !cover;
+  $('live-title').hidden = cover;
+  $('live-cover-text').textContent = $('cover-text').value.trim();
+  $('live-title-white').textContent = $('title-white').value.trim();
+  $('live-title-yellow').textContent = $('title-yellow').value.trim();
+  const image = `/api/jobs/${encodeURIComponent(editDraftJobId)}/covers/${coverIndex}`;
+  if ($('live-cover-image').getAttribute('src') !== image) $('live-cover-image').src = image;
+}
+async function persistEditDraft() {
+  clearTimeout(editDraftTimer); editDraftTimer = null;
+  const id = editDraftJobId;
+  if (!id) return;
+  const spec = editDraft();
+  editDraftSave = editDraftSave.catch(() => {}).then(() => api(`/api/jobs/${encodeURIComponent(id)}/edit-draft`, {method:'PUT',body:JSON.stringify(spec)}));
+  try { await editDraftSave; }
+  catch (error) { if (selected?.id === id) $('edit-message').textContent = error.message; }
+}
+function onEditInput() {
+  if (!editDraftJobId || editRunning) return;
+  if ($('video').currentTime < .5 && $('video').readyState) $('video').currentTime = .6;
+  updateLiveOverlay(); updateEditActions();
+  $('edit-message').textContent = '预览已更新，文字会自动保存；下载时才生成新成片。';
+  clearTimeout(editDraftTimer); editDraftTimer = setTimeout(persistEditDraft, 500);
+}
+function setEditInputsDisabled(disabled) {
+  for (const id of ['cover-text','title-white','title-yellow']) $(id).disabled = disabled;
+  $('cover-grid').querySelectorAll('button').forEach(button => button.disabled = disabled);
+}
 function chooseCover(index) {
   coverIndex = index;
   $('cover-grid').querySelectorAll('button').forEach(button => button.setAttribute('aria-checked', String(Number(button.dataset.index) === index)));
+  if (editDraftJobId) onEditInput();
 }
 function renderCoverEditor(id, form) {
   const prefix = `/api/jobs/${encodeURIComponent(id)}/`;
   const saved = form.edit?.spec;
   editShotCount = form.shots.length;
+  editDraftJobId = null;
+  exportedEditSpec = form.edit?.state === 'done' ? flattenedEdit(saved) : null;
+  renderingEditSpec = null;
+  editRunning = ['queued','running'].includes(form.edit?.state);
+  downloadAfterEdit = false;
   $('cover-grid').replaceChildren();
   for (const option of form.covers) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'cover-choice';
@@ -217,10 +264,18 @@ function renderCoverEditor(id, form) {
     const time = document.createElement('span'); time.textContent = formatSecond(option.time);
     button.append(img, time); button.onclick = () => chooseCover(option.index); $('cover-grid').append(button);
   }
-  chooseCover(saved?.cover_index ?? 0);
-  $('cover-text').value = saved?.cover_text || '';
-  $('title-white').value = saved?.titles?.[0]?.white ?? '';
-  $('title-yellow').value = saved?.titles?.[0]?.yellow ?? '';
+  const draft = form.draft || flattenedEdit(saved) || {};
+  chooseCover(draft.cover_index ?? 0);
+  $('cover-text').value = draft.cover_text || '';
+  $('title-white').value = draft.white || '';
+  $('title-yellow').value = draft.yellow || '';
+  editDraftJobId = id;
+  setEditInputsDisabled(editRunning);
+  updateEditActions();
+  $('video').pause(); $('video').src = prefix + 'artifacts/source-video';
+  $('video').onloadedmetadata = () => { if (editDraftJobId === id) { $('video').currentTime = Math.min(.6, Math.max(0, $('video').duration - .1)); updateLiveOverlay(); } };
+  $('live-overlay').hidden = false;
+  updateLiveOverlay();
 }
 async function pollEdit(id) {
   clearTimeout(editTimer);
@@ -229,22 +284,31 @@ async function pollEdit(id) {
     const state = await api(`/api/jobs/${encodeURIComponent(id)}/edit-status`);
     if (selected?.id !== id) return;
     if (state.state === 'queued' || state.state === 'running') {
+      editRunning = true; setEditInputsDisabled(true);
       $('edit-message').textContent = state.state === 'queued' ? '封面版已排队，正在等待导出。' : '正在叠加封面与标题，并检查成片。';
       $('save-edit').disabled = true;
       $('download-cover').hidden = true;
       editTimer = setTimeout(() => pollEdit(id), 4000);
     } else if (state.state === 'done') {
+      editRunning = false; setEditInputsDisabled(false);
+      exportedEditSpec = flattenedEdit(state.spec) || renderingEditSpec;
+      renderingEditSpec = null;
       $('save-edit').disabled = false;
-      $('edit-message').textContent = '封面版已通过检查，可在右侧播放和下载。';
+      $('edit-message').textContent = '封面版已通过检查，下载文件已更新。';
       const prefix = `/api/jobs/${encodeURIComponent(id)}/artifacts/`;
       const version = `?v=${encodeURIComponent(state.result || Date.now())}`;
-      $('video').src = prefix + 'video' + version;
       $('download-video').href = prefix + 'video?download=true&v=' + encodeURIComponent(state.result || Date.now());
       $('download-cover').href = prefix + 'cover?download=true&v=' + encodeURIComponent(state.result || Date.now());
       $('download-cover').hidden = false;
       $('download-report').href = prefix + 'report' + version;
       $('quality-summary').textContent = '封面版画面与声音检查通过。';
+      updateEditActions();
+      if (downloadAfterEdit && !editChanged()) {
+        downloadAfterEdit = false;
+        $('download-video').click();
+      }
     } else {
+      editRunning = false; setEditInputsDisabled(false); downloadAfterEdit = false;
       $('save-edit').disabled = false;
       $('edit-message').textContent = state.error || '可以修改文字，再导出封面版。';
     }
@@ -261,7 +325,7 @@ async function openCoverEditor() {
     const form = await api(`/api/jobs/${encodeURIComponent(id)}/edit`);
     if (selected?.id !== id) return;
     renderCoverEditor(id, form);
-    $('edit-message').textContent = '选择封面画面，填写封面大黄字和整片固定标题。';
+    $('edit-message').textContent = '改字后右侧立即预览，下载时再生成新成片。';
     $('cover-editor').scrollIntoView({behavior:'smooth',block:'start'});
     if (['queued','running','done'].includes(form.edit?.state)) pollEdit(id);
   } catch (error) { if (selected?.id === id) $('edit-message').textContent = error.message; }
@@ -302,7 +366,8 @@ $('create-form').onsubmit = async event => {
   submitting = true; $('generate').disabled = true; $('generate').firstChild.textContent = '正在提交… '; $('form-error').textContent = '';
   try {
     const job = await api('/api/jobs',{method:'POST',body:JSON.stringify({...spec,request_id:requestKey})});
-    jobs.unshift(job); submitting = false; storageSet('hainan-draft',{spec,requestKey:null,pendingSpec:null});
+    jobs.unshift(job); submitting = false;
+    storageSet('hainan-draft',{spec:{text:'',emotion_alpha:.8,width:1080,height:1920,music_key:null},requestKey:null,pendingSpec:null});
     await selectJob(job.id); refreshHistory();
   } catch (error) { $('form-error').textContent = error.message + ' 再次点击会核对同一次提交。'; }
   finally { submitting = false; $('generate').disabled = false; $('generate').firstChild.textContent = '开始制作 '; }
@@ -340,22 +405,40 @@ $('music-upload').onclick = async () => {
   } catch (error) { $('music-status').textContent = error.message || '上传失败，请重试'; }
   finally { $('music-upload').disabled = Boolean(selected); }
 };
-$('new-job').onclick = () => { newDraft(); closeMobileHistory(); $('editor').focus(); };
+$('new-job').onclick = () => { newDraft(null, false); closeMobileHistory(); $('editor').focus(); };
 $('mobile-new-job').onclick = $('new-job').onclick;
 $('reuse').onclick = () => { const spec = selected?.spec; if (spec) { newDraft(spec); $('editor').focus(); toast('已沿用文案，修改后可制作新视频。'); } };
 $('open-editor').onclick = openCoverEditor;
-$('save-edit').onclick = async () => {
+async function exportEdit(download = false) {
   const id = selected?.id; if (!id) return;
+  if (editRunning) { $('edit-message').textContent = '上一版仍在导出，请等待完成。'; return; }
+  if (!editChanged()) { if (download) $('download-video').click(); return; }
   const title = {white:$('title-white').value.trim(), yellow:$('title-yellow').value.trim()};
   const spec = {cover_index:coverIndex, cover_text:$('cover-text').value.trim(),
     titles:Array.from({length:editShotCount}, () => ({...title}))};
   if (!spec.cover_text || !title.white || !title.yellow) {
     $('edit-message').textContent = '请填写封面大黄字和整片固定的白字、黄字。'; return;
   }
+  const submitted = editDraft();
+  await persistEditDraft();
+  editRunning = true; setEditInputsDisabled(true);
   $('save-edit').disabled = true; $('edit-message').textContent = '正在提交封面设置…';
-  try { await api(`/api/jobs/${encodeURIComponent(id)}/edit`, {method:'POST',body:JSON.stringify(spec)}); if (selected?.id === id) pollEdit(id); }
-  catch (error) { if (selected?.id === id) $('edit-message').textContent = error.message; $('save-edit').disabled = false; }
+  try {
+    await api(`/api/jobs/${encodeURIComponent(id)}/edit`, {method:'POST',body:JSON.stringify(spec)});
+    if (selected?.id === id) { renderingEditSpec = submitted; downloadAfterEdit = download; pollEdit(id); }
+  } catch (error) { if (selected?.id === id) { editRunning = false; setEditInputsDisabled(false); $('edit-message').textContent = error.message; $('save-edit').disabled = false; } }
+}
+$('save-edit').onclick = () => exportEdit(true);
+$('download-video').onclick = event => {
+  if ($('cover-editor').hidden || !editChanged()) return;
+  event.preventDefault(); void exportEdit(true);
 };
+$('download-cover').onclick = event => {
+  if ($('cover-editor').hidden || !editChanged()) return;
+  event.preventDefault(); $('edit-message').textContent = '封面文字有新修改，请先下载更新后的成片。';
+};
+for (const id of ['cover-text','title-white','title-yellow']) $(id).addEventListener('input', onEditInput);
+$('video').addEventListener('timeupdate', updateLiveOverlay);
 $('example').onclick = () => { if ($('editor').value.trim()) { toast('先清空文案，再填入示例，避免覆盖你的内容。'); return; } $('editor').value = sample; saveDraft(); $('editor').focus(); };
 $('editor').addEventListener('input', saveDraft);
 $('history-filters').onclick = event => { const button = event.target.closest('button[data-filter]'); if (!button) return; filter = button.dataset.filter; $('history-filters').querySelectorAll('button').forEach(el => el.setAttribute('aria-pressed', String(el === button))); renderHistory(); };

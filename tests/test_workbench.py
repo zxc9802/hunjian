@@ -70,7 +70,7 @@ class FakeNas:
             if self.drop_reply:
                 self.drop_reply = False
                 raise requests.Timeout('upstream accepted but reply lost')
-        elif path.endswith('/video'):
+        elif path.endswith(('/video', '/source-video')):
             response.status_code = 206
             response.headers.update({'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-3/12', 'Content-Length': '4', 'Accept-Ranges': 'bytes'})
             response._content = b'test'
@@ -136,6 +136,22 @@ class WorkbenchTests(unittest.TestCase):
             self.assertNotIn(self.settings.nas_token, response.text)
             self.assertNotIn('nas.local', response.text)
         self.assertIn("frame-ancestors 'none'", self.client.get('/').headers['content-security-policy'])
+
+    def test_title_draft_is_saved_per_job_without_starting_export(self):
+        first = self.submit().json()['id']
+        second = self.submit(request_id='test-request-002', text='第二条视频。').json()['id']
+        self.app.state.store.update(first, 'done')
+        self.app.state.store.update(second, 'done')
+        draft = {'cover_index': 2, 'cover_text': '带爸妈来海南', 'white': '三亚康养旅居', 'yellow': '夫妻连续三年过冬'}
+        result = self.client.put(f'/api/jobs/{first}/edit-draft', json=draft, headers=self.headers)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(self.client.get(f'/api/jobs/{first}/edit').json()['draft'], draft)
+        self.assertIsNone(self.client.get(f'/api/jobs/{second}/edit').json()['draft'])
+        self.assertFalse(any(method == 'POST' and path.endswith('/edit') for method, path, _ in self.nas.calls))
+        response = self.client.get(f'/api/jobs/{first}/artifacts/source-video', headers={'Range': 'bytes=0-3'})
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.content, b'test')
+        self.assertEqual(self.nas.calls[-1][1], '/v1/jobs/' + 'a' * 32 + '/source-video')
 
     def test_validation_and_cross_site_rejection_before_nas(self):
         for value in (True, .9, .81, '0.8', None):

@@ -24,7 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import music_library
 
 ROOT = Path(__file__).resolve().parent
-ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'cover': ('png', 'image/png'),
+ARTIFACTS = {'video': ('mp4', 'video/mp4'), 'source-video': ('mp4', 'video/mp4'), 'cover': ('png', 'image/png'),
              'report': ('json', 'application/json'),
              'captions': ('srt', 'application/x-subrip'), 'plan': ('json', 'application/json'),
              'cuts': ('json', 'application/json')}
@@ -84,6 +84,7 @@ class Store:
                     snapshot TEXT NOT NULL DEFAULT '{}', error TEXT);
                 CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, expires REAL);
                 CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT, created REAL);
+                CREATE TABLE IF NOT EXISTS edit_drafts (job_id TEXT PRIMARY KEY, spec TEXT NOT NULL);
             ''')
         self.prune_history()
 
@@ -139,6 +140,17 @@ class Store:
         with self.connect() as db:
             db.execute("DELETE FROM jobs WHERE state IN ('done','failed','interrupted','rejected') AND updated<=?",
                        (time.time() - HISTORY_RETENTION_SECONDS,))
+            db.execute('DELETE FROM edit_drafts WHERE job_id NOT IN (SELECT id FROM jobs)')
+
+    def edit_draft(self, job_id):
+        with self.connect() as db:
+            row = db.execute('SELECT spec FROM edit_drafts WHERE job_id=?', (job_id,)).fetchone()
+        return json.loads(row['spec']) if row else None
+
+    def save_edit_draft(self, job_id, spec):
+        with self.connect() as db:
+            db.execute('INSERT INTO edit_drafts VALUES (?,?) ON CONFLICT(job_id) DO UPDATE SET spec=excluded.spec',
+                       (job_id, json.dumps(spec, ensure_ascii=False)))
 
     def list(self):
         self.prune_history()
@@ -516,7 +528,25 @@ def create_app(settings=None, nas=None):
 
     @app.get('/api/jobs/{job_id}/edit', dependencies=[Depends(authorize)])
     def edit_form(job_id: str):
-        return read_nas('/v1/jobs/' + finished_nas_id(job_id) + '/edit')
+        form = read_nas('/v1/jobs/' + finished_nas_id(job_id) + '/edit')
+        form['draft'] = store.edit_draft(job_id)
+        return form
+
+    @app.put('/api/jobs/{job_id}/edit-draft', dependencies=[Depends(authorize)])
+    async def save_edit_draft(job_id: str, request: Request):
+        finished_nas_id(job_id)
+        value = await read_json(request)
+        index = value.get('cover_index')
+        if type(index) is not int or not 0 <= index < 10:
+            raise HTTPException(400, '请选择一张封面画面')
+        spec = {'cover_index': index}
+        for field in ('cover_text', 'white', 'yellow'):
+            text = value.get(field)
+            if not isinstance(text, str) or len(text.strip()) > 28:
+                raise HTTPException(400, '文字不能超过 28 字')
+            spec[field] = text.strip()
+        store.save_edit_draft(job_id, spec)
+        return {'saved': True}
 
     @app.get('/api/jobs/{job_id}/edit-status', dependencies=[Depends(authorize)])
     def edit_status(job_id: str):

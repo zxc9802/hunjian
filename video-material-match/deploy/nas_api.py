@@ -396,6 +396,13 @@ def create_app(root=None, token=None, runner=generate, start_worker=True, edit_r
                 finally:
                     temporary.unlink(missing_ok=True)
             return FileResponse(cover, filename='cover.png', media_type='image/png')
+        if artifact == 'source-video':
+            folder = (jobs.root / 'outputs' / job_id).resolve()
+            report = json.loads((folder / 'quality-report.json').read_text(encoding='utf-8'))
+            source = Path(report['video']).resolve()
+            if not report.get('passed') or not source.is_relative_to(folder) or not source.is_file():
+                raise HTTPException(404, '原始成片不存在')
+            return FileResponse(source, filename='source-video.mp4', media_type='video/mp4')
         report_name = (job['result'][:-4] + '/quality-report.json') if job['result'].startswith('edit-') else 'quality-report.json'
         name = {'video': job['result'], 'report': report_name, 'captions': 'captions.srt',
                 'plan': 'plan.json', 'cuts': 'cuts.json'}.get(artifact)
