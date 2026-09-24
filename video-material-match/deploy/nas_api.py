@@ -190,11 +190,11 @@ class Jobs:
             for row in db.execute("SELECT spec FROM jobs WHERE state NOT IN ('done','deleted')"):
                 if json.loads(row['spec']).get('music_key') == key:
                     raise HTTPException(409, '这首音乐仍被未完成的任务使用，请先完成或删除相关任务')
-            try:
-                delete(key)
-            except Exception:
-                raise HTTPException(503, '音乐删除未完成，请稍后重试') from None
             db.execute('INSERT OR IGNORE INTO deleted_music VALUES (?)', (key,))
+        try:
+            delete(key)
+        except Exception:
+            raise HTTPException(503, '音乐删除未完成，请稍后重试') from None
 
     def log(self, job_id, message):
         message = clean_error(message)
